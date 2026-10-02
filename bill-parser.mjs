@@ -7,8 +7,9 @@ export const CATS = [
   "Bills & Utilities", "Healthcare", "Shopping", "Education", "Miscellaneous"
 ];
 
-// Tried in order. If the first is retired / rate-limited / overloaded, the next is used.
-export const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+// Tried in order. If a model is retired / not available to your key / rate-limited / overloaded, the next one is used.
+// (Gemini 2.5 models are now restricted to existing users, so they are no longer listed.)
+export const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
 
 /* ------------------------------------------------------------------ *
  * LINE-LEVEL REJECT PATTERNS (non-item lines on a receipt)
@@ -569,19 +570,25 @@ Output strictly in the JSON schema.`;
   });
 
   let resJson = null;
-  let lastErr = null;
+  const errors = [];
   for (const model of GEMINI_MODELS) {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-      { method: "POST", headers: { "Content-Type": "application/json" }, body }
-    );
+    let response;
+    try {
+      response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body }
+      );
+    } catch (netErr) {
+      throw new Error("Network error: " + (netErr && netErr.message ? netErr.message : "offline"));
+    }
     if (response.ok) { resJson = await response.json(); break; }
     const err = await response.json().catch(() => ({}));
-    lastErr = new Error(err.error?.message || `Gemini API error (Status ${response.status})`);
-    // model retired / quota / overloaded -> try next model; anything else (bad key, bad request) -> stop
-    if (![404, 429, 500, 503].includes(response.status)) throw lastErr;
+    const msg = err.error?.message || `Gemini API error (Status ${response.status})`;
+    // bad / unauthorised key: no point trying other models
+    if (response.status === 401 || response.status === 403) throw new Error(msg);
+    errors.push(`${model}: ${String(msg).slice(0, 110)}`);
   }
-  if (!resJson) throw lastErr || new Error("Gemini request failed.");
+  if (!resJson) throw new Error(errors.join(" | ") || "Gemini request failed.");
 
   const textOut = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!textOut) {
