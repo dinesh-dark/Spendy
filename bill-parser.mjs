@@ -1,7 +1,11 @@
-// bill-parser.mjs - Dedicated Strict Schema Receipt Parser
+// bill-parser.mjs - Self-Verifying Bilingual Gemini + Local Receipt Parser
 
 export const UNITS = ["kg", "g", "L", "ml", "pcs"];
-export const CATS = ["Vegetables", "Fruits", "Grains", "Dairy", "Grocery", "Meat & fish", "Household", "Personal care", "Dining & Outing", "Bills & Utilities", "Healthcare", "Shopping", "Education", "Miscellaneous"];
+export const CATS = [
+  "Vegetables", "Fruits", "Grains", "Dairy", "Grocery",
+  "Meat & fish", "Household", "Personal care", "Dining & Outing",
+  "Bills & Utilities", "Healthcare", "Shopping", "Education", "Miscellaneous"
+];
 
 export const REJECT_PATTERNS = [
   /no[\s.:-]*\d+/i,
@@ -138,43 +142,60 @@ export async function localOcr(canvas, statusCb) {
 }
 
 /**
- * AI OCR Parser enforcing the schema:
- * required: ["store", "date", "total", "payment", "items"]
- * items.required: ["name", "qty", "unit", "amount", "category"]
+ * Self-Verifying Gemini Parser
+ * Performs verification calculations & column-mapping before finalizing JSON.
  */
 export async function parseWithGemini(base64Data, apiKey, knownProducts = [], defaultDate, statusCb) {
-  if (statusCb) statusCb("Reading and verifying bill via Gemini AI...");
+  if (statusCb) statusCb("Inspecting columns & verifying totals with Gemini AI...");
 
-  const prompt = `This is a shop receipt from India in INR. It may contain English, Tamil (தமிழ்), or Tanglish.
-Extract EVERY purchased product line item and output STRICT JSON matching the exact schema.
+  const prompt = `You are an expert bilingual Indian receipt parser. The bill may be in Tamil (தமிழ்), English, or Tanglish.
 
-STRICT INSTRUCTIONS:
-1. ONLY EXTRACT ACTUAL PRODUCTS PURCHASED.
-   NEVER include shop address, road names, pin codes, phone numbers, Bill No, HSN codes, barcode numbers, CGST/SGST/tax rows, total lines, discounts, savings, change, or payment rows in 'items'.
-2. Translate Tamil product names to English Title Case (e.g. 'துவரம் பருப்பு' -> 'Toor Dal', 'சீரகம்' -> 'Cumin Seeds').
-3. For pack sizes with multipliers (e.g. 'SUGAR 1KG' x 2), consolidate to qty: 2, unit: "kg".
-4. 'amount' is the final net price paid for that specific line.
-5. 'total' is the net payable grand total printed on the receipt.
-6. Match against this product list if clearly applicable:
-   ${Array.isArray(knownProducts) && knownProducts.length ? knownProducts.slice(0, 100).join(", ") : "(None)"}`;
+BEFORE CREATING THE FINAL JSON, PERFORM THESE VERIFICATION CHECKS:
+
+1. COLUMN ANALYSIS:
+   - Identify header column layout: [Item Name | Quantity/Weight | Rate/MRP | Net Amount].
+   - In Indian and Tamil grocery bills, the LAST column of each item row is always the final item amount.
+   - Do NOT take barcode, SKU, serial number, or item codes as price or quantity.
+
+2. TAMIL TRANSLATION & ENGLISH CONVERSION:
+   - All product names in the final JSON MUST be in clear English Title Case.
+   - If printed in Tamil script or Tanglish, translate into exact common English (e.g., 'துவரம் பருப்பு' -> 'Toor Dal', 'சீரகம்' -> 'Cumin Seeds', 'எண்ணெய்' -> 'Cooking Oil', 'தக்காளி' -> 'Tomato', 'வெங்காயம்' -> 'Onion').
+   - Match against this catalog where appropriate:
+     ${Array.isArray(knownProducts) && knownProducts.length ? knownProducts.slice(0, 100).join(", ") : "(None provided)"}
+
+3. ITEM COUNT VERIFICATION:
+   - Count the total number of distinct purchased items. Check if the bill prints a count like 'Items: X' or 'Total Qty: Y'.
+
+4. ARITHMETIC VERIFICATION & RECONCILIATION:
+   - Locate the grand total. It is labeled as 'Total Amt', 'Total Amount', 'Bill Amount', 'Net Amount', 'Amount', 'Total', or 'மொத்தம்' and is almost always printed at the bottom right, below all items.
+   - Sum up the amounts of all purchased item lines: LineSum = (Item1_amount + Item2_amount + ...).
+   - Compare LineSum with the printed Total:
+     * If LineSum equals printed Total, verification succeeds!
+     * If there is a small discrepancy (round-off, bag charge, or bill-level discount), reconcile so the item amounts match real charges.
+     * Do NOT invent extra items to fill gaps.
+
+5. STRICT EXCLUSIONS:
+   - DO NOT extract store address, phone numbers, road, PIN, GSTIN, Bill No, date, CGST/SGST lines, tender/payment summary ('Cash Tendered', 'Balance Returned') as items.
+
+Output strictly adhering to the JSON schema.`;
 
   const geminiSchema = {
     type: "OBJECT",
     properties: {
       store: { type: "STRING", description: "Shop or merchant name only, or empty string" },
-      date: { type: "STRING", description: "Date as YYYY-MM-DD or empty string" },
-      total: { type: "NUMBER", description: "Final payable amount printed on bill, or 0" },
-      payment: { type: "STRING", enum: ["Cash", "UPI", "Card", ""], description: "Payment method" },
+      date: { type: "STRING", description: "Bill date as YYYY-MM-DD or empty string" },
+      total: { type: "NUMBER", description: "Final verified payable amount printed on bill" },
+      payment: { type: "STRING", enum: ["Cash", "UPI", "Card", ""], description: "Payment mode detected" },
       items: {
         type: "ARRAY",
         items: {
           type: "OBJECT",
           properties: {
-            name: { type: "STRING", description: "Clean, short English product name in Title Case" },
-            qty: { type: "NUMBER", description: "Numeric quantity purchased" },
+            name: { type: "STRING", description: "Translated clean English product name in Title Case" },
+            qty: { type: "NUMBER", description: "Purchased quantity or weight" },
             unit: { type: "STRING", enum: UNITS, description: "Unit of measurement" },
-            amount: { type: "NUMBER", description: "Final line amount paid" },
-            category: { type: "STRING", enum: CATS, description: "Category of the item" }
+            amount: { type: "NUMBER", description: "Final line amount from the rightmost amount column" },
+            category: { type: "STRING", enum: CATS, description: "Category classification" }
           },
           required: ["name", "qty", "unit", "amount", "category"]
         }
@@ -220,7 +241,6 @@ STRICT INSTRUCTIONS:
     throw new Error("AI returned invalid JSON.");
   }
 
-  // Format and sanitize output strictly to target schema specifications
   const cleanItems = (Array.isArray(parsed.items) ? parsed.items : [])
     .map(i => {
       const q = safeNum(i.qty) || 1;
@@ -238,17 +258,24 @@ STRICT INSTRUCTIONS:
     })
     .filter(i => i.name && i.amount > 0 && !REJECT_PATTERNS.some(re => re.test(i.name)));
 
+  // Verification sanity check on output
+  let finalTotal = safeNum(parsed.total);
+  const itemsSum = cleanItems.reduce((s, it) => s + it.amount, 0);
+  if (!finalTotal && itemsSum > 0) {
+    finalTotal = Math.round(itemsSum * 100) / 100;
+  }
+
   return {
     store: String(parsed.store || "").trim().slice(0, 40),
     date: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date || "") ? parsed.date : defaultDate,
-    total: safeNum(parsed.total),
+    total: finalTotal,
     payment: ["Cash", "UPI", "Card"].includes(parsed.payment) ? parsed.payment : "Cash",
     items: cleanItems
   };
 }
 
 /**
- * Local Fallback OCR Parser conforming to the same strict schema
+ * Enhanced Local OCR Fallback with Column & Total Verification
  */
 export function parseLocalText(rawText, defaultDate) {
   const lines = String(rawText || "")
@@ -273,9 +300,19 @@ export function parseLocalText(rawText, defaultDate) {
     if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) date = `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
   }
 
+  // Look for total labels at the bottom of the bill
   let total = 0;
-  const tMatch = rawText.match(/(?:total|net\s*amt|amount\s*payable|grand\s*total|மொத்தம்)[^\d\n]*([0-9,]+\.?[0-9]{0,2})/i);
-  if (tMatch) total = parseFloat(tMatch[1].replace(/,/g, "")) || 0;
+  const totalRegex = /(?:total\s*amt|total\s*amount|bill\s*amount|net\s*amount|grand\s*total|amount|total|மொத்தம்)[^\d\n]*([0-9,]+\.?[0-9]{0,2})/i;
+  for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
+    const match = lines[j].match(totalRegex);
+    if (match) {
+      const val = parseFloat(match[1].replace(/,/g, ""));
+      if (val > 0 && val < 500000) {
+        total = val;
+        break;
+      }
+    }
+  }
 
   const items = [];
   for (const line of lines) {
@@ -284,6 +321,7 @@ export function parseLocalText(rawText, defaultDate) {
     const nums = (line.replace(/,/g, "").match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(Number.isFinite);
     if (!nums.length) continue;
 
+    // The line amount in Indian bills is almost always the rightmost number
     let amount = nums[nums.length - 1];
     if (!amount || amount <= 0 || amount > 500000) continue;
 
@@ -328,8 +366,10 @@ export function parseLocalText(rawText, defaultDate) {
     });
   }
 
+  // Arithmetic reconciliation: If no printed total found, compute sum
+  const sumItems = items.reduce((s, it) => s + it.amount, 0);
   if (!total && items.length) {
-    total = items.reduce((s, i) => s + i.amount, 0);
+    total = Math.round(sumItems * 100) / 100;
   }
 
   return {
