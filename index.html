@@ -751,7 +751,7 @@
       go("bill");
       try {
         let canvas = file.type === "application/pdf" ? await pdfToCanvas(file) : await shrinkImage(file);
-        B.img = canvas.toDataURL("image/jpeg", 0.85);
+        B.img = canvas.toDataURL("image/jpeg", 0.72);
         const base64Data = B.img.split(",")[1];
 
         let parsedJson;
