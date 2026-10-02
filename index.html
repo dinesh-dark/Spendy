@@ -305,7 +305,6 @@
   <script type="module">
     import { shrinkImage, pdfToCanvas, parseWithGemini, localOcr, parseLocalText } from './bill-parser.mjs';
 
-    // --- Master Catalog ---
     const P = [
       ["Rent", "🏠", "Bills & Utilities"],
       ["Electricity", "⚡", "Bills & Utilities"],
@@ -320,7 +319,7 @@
       ["Urad Dal", "🫘", "Grains"],
       ["Wheat flour / Atta", "🌾", "Grains"],
       ["Maida", "🌾", "Grains"],
-      ["Cooking Oil", "🛢️", "Grocery"],
+      ["Cooking Oil", "🛢️️", "Grocery"],
       ["Sugar", "🍬", "Grocery"],
       ["Salt", "🧂", "Grocery"],
       ["Mustard / Kadugu", "🌶️", "Grocery"],
@@ -438,7 +437,6 @@
       go('bill');
     }
 
-    // Window bindings for event handlers
     window.go = go;
     window.shift = shift;
     window.editItem = editItem;
@@ -468,7 +466,6 @@
     window.shiftBudgetMonth = shiftBudgetMonth;
     window.saveMonthBudget = saveMonthBudget;
 
-    // --- Home Screen ---
     function home() {
       const cur = today().slice(0, 7), it = inMo(cur), t = sum(it);
       const b = getBudgetForMonth(cur);
@@ -497,7 +494,7 @@
       ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small>${nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
       <div class="tiles">
         <button class="tile" onclick="go('add')">➕<b>Add purchase</b><small>Log item manually</small></button>
-        <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Smart OCR & Item Knowledge</small></button>
+        <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Strict OCR verification</small></button>
         <button class="tile" onclick="bMo='${cur}';go('budget')">🎯<b>Monthly Budgets</b><small>Set custom limit per month</small></button>
         <button class="tile" onclick="go('rep')">📊<b>View reports</b><small>Insights &amp; trends</small></button>
         <button class="tile" onclick="go('price')">🏷️<b>Price tracker</b><small>Compare stores</small></button>
@@ -509,7 +506,6 @@
       <div class="card">${S.items.length ? [...S.items].sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id).slice(0, 5).map(row).join("") : empty("No purchases yet. Tap + to add your first one.")}</div>${gcard()}`;
     }
 
-    // --- Custom Month Budget Planner ---
     function shiftBudgetMonth(d) {
       const [y, m] = bMo.split("-").map(Number);
       const n = new Date(y, m - 1 + d, 1);
@@ -520,14 +516,9 @@
     function saveMonthBudget() {
       const val = +$("#bVal").value;
       const defVal = +$("#bDefVal").value;
-      if (isNaN(val) || val < 0) {
-        $("#bErr").textContent = "Enter a valid budget amount.";
-        return;
-      }
+      if (isNaN(val) || val < 0) { $("#bErr").textContent = "Enter a valid budget amount."; return; }
       S.budgets[bMo] = val;
-      if (!isNaN(defVal) && defVal > 0) {
-        S.defaultBudget = defVal;
-      }
+      if (!isNaN(defVal) && defVal > 0) S.defaultBudget = defVal;
       save();
       alert(`Budget for ${new Date(bMo + "-01T00:00").toLocaleDateString("en-IN", { month: "long", year: "numeric" })} set to ${fm(val)}!`);
       go('budget');
@@ -543,11 +534,7 @@
       const configuredMonths = Object.keys(S.budgets || {}).sort().reverse();
 
       return `<h1>Monthly Budget Planner</h1>
-      <div class="mnav">
-        <button onclick="window.shiftBudgetMonth(-1)">‹</button>
-        <span>${monthTitle}</span>
-        <button onclick="window.shiftBudgetMonth(1)">›</button>
-      </div>
+      <div class="mnav"><button onclick="window.shiftBudgetMonth(-1)">‹</button><span>${monthTitle}</span><button onclick="window.shiftBudgetMonth(1)">›</button></div>
       <div class="card">
         <div class="two" style="margin-top:0">
           <div><small>Spent this month</small><br><b>${fm(spent)}</b></div>
@@ -556,9 +543,9 @@
       </div>
       <div class="card">
         <b>Budget for ${monthTitle}</b>
-        <small style="display:block;margin:4px 0 10px">${isCustom ? "✓ Custom budget configured for this month" : "Currently using default fallback budget"}</small>
+        <small style="display:block;margin:4px 0 10px">${isCustom ? "✓ Custom budget set for this month" : "Currently using default fallback budget"}</small>
         <label style="margin-top:0">Target Amount (₹)</label>
-        <input id="bVal" type="number" inputmode="decimal" value="${curB}" placeholder="e.g. 30000">
+        <input id="bVal" type="number" inputmode="decimal" value="${curB}">
         <label>Default fallback for other months (₹)</label>
         <input id="bDefVal" type="number" inputmode="decimal" value="${S.defaultBudget || 25000}">
         <div class="err" id="bErr"></div>
@@ -568,21 +555,14 @@
         <b>Configured Month Limits</b>
         ${configuredMonths.length ? configuredMonths.map(m => `
           <div class="row">
-            <div class="g">
-              <b>${new Date(m + "-01T00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</b>
-              <small>Spent: ${fm(sum(inMo(m)))}</small>
-            </div>
-            <div class="r">
-              <b>${fm(S.budgets[m])}</b>
-              <button class="link" style="font-size:12px;display:block" onclick="bMo='${m}';go('budget')">Edit</button>
-            </div>
+            <div class="g"><b>${new Date(m + "-01T00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</b><small>Spent: ${fm(sum(inMo(m)))}</small></div>
+            <div class="r"><b>${fm(S.budgets[m])}</b><button class="link" style="font-size:12px;display:block" onclick="bMo='${m}';go('budget')">Edit</button></div>
           </div>
         `).join("") : empty("No custom budgets set yet.")}
       </div>
       <button class="link" style="display:block;margin:12px auto 0" onclick="go('home')">Back to Home</button>`;
     }
 
-    // --- History Screen ---
     function hist() {
       const it = inMo(mo);
       return `<h1>Purchase history</h1>${mnav()}
@@ -779,7 +759,7 @@
             });
           } catch (aiErr) {
             console.warn("Gemini Vision failed, falling back to local module:", aiErr);
-            B.status = "Falling back to local OCR knowledge engine...";
+            B.status = "Falling back to local OCR engine...";
             const el = $("#bstatus"); if (el) el.textContent = B.status;
             const text = await localOcr(canvas, st => {
               B.status = st;
@@ -800,10 +780,16 @@
         B.busy = false;
         B.store = parsedJson.store || "";
         B.date = parsedJson.date || today();
-        B.pay = parsedJson.pay || "Cash";
+        B.payment = parsedJson.payment || "Cash";
         B.total = parsedJson.total || 0;
         B.items = (parsedJson.items || []).map(i => ({ ...i, on: true }));
-        B.rawJson = JSON.stringify(parsedJson, null, 2);
+        B.rawJson = JSON.stringify({
+          store: B.store,
+          date: B.date,
+          total: B.total,
+          payment: B.payment,
+          items: B.items.map(i => ({ name: i.name, qty: i.qty, unit: i.unit, amount: i.amount, category: i.category || i.cat }))
+        }, null, 2);
         go("bill");
         bt();
       } catch (err) {
@@ -820,10 +806,10 @@
       if (!B || !B.items) {
         return `<h1>Scan a bill</h1>
         <div class="card">
-          <small>Take a clear photo of your receipt. Modular knowledge parser filters out address/phone artifacts.</small>
-          ${!S.geminiKey ? `<div style="margin:8px 0;font-size:12px;background:#fef3c7;color:#92400e;padding:8px;border-radius:8px">💡 <b>Accuracy tip:</b> Add a free Gemini Vision API Key in <a href="#" onclick="go('settings')" style="color:#b45309;font-weight:700">Settings</a> for 100% reliable receipt recognition.</div>` : ""}
+          <small>Take a clear photo of your receipt. Strict target schema filters out address, telephone, and tender noise.</small>
+          ${!S.geminiKey ? `<div style="margin:8px 0;font-size:12px;background:#fef3c7;color:#92400e;padding:8px;border-radius:8px">💡 <b>Accuracy tip:</b> Add a free Gemini Vision API Key in <a href="#" onclick="go('settings')" style="color:#b45309;font-weight:700">Settings</a> for optimal recognition.</div>` : ""}
           ${up}
-          ${B && B.busy ? `<div class="empty"><b id="bstatus">${esc(B.status || "Reading image...")}</b><br><small>Filtering noise & validating lines...</small></div>` : ""}
+          ${B && B.busy ? `<div class="empty"><b id="bstatus">${esc(B.status || "Reading image...")}</b><br><small>Extracting store, items &amp; totals...</small></div>` : ""}
           ${B && B.err ? `<div class="warn">${esc(B.err)}</div>` : ""}
         </div>
         <button class="link" onclick="go('add')">Add by hand instead</button>`;
@@ -837,7 +823,7 @@
         <input maxlength="40" value="${esc(B.store || "")}" placeholder="Store name" oninput="B.store=this.value">
         <div class="f">
           <div><label>Date</label><input type="date" value="${B.date}" oninput="B.date=this.value"></div>
-          <div><label>Payment</label><select onchange="B.pay=this.value">${opts(["Cash", "UPI", "Card"], B.pay)}</select></div>
+          <div><label>Payment</label><select onchange="B.payment=this.value">${opts(["Cash", "UPI", "Card"], B.payment)}</select></div>
         </div>
         <details style="margin-top:8px">
           <summary style="font-size:12px;color:var(--mute);cursor:pointer">View Structured JSON</summary>
@@ -861,12 +847,12 @@
               <input type="number" inputmode="decimal" min="0" step="any" value="${i.amount}" placeholder="Amount (₹)" aria-label="Amount" oninput="bs(${k},'amount',this.value===''?NaN:+this.value)">
             </div>
             <div class="f" style="align-items:center">
-              <select aria-label="Category" onchange="bs(${k},'cat',this.value)">${opts(Object.keys(AllC()), i.cat)}</select>
+              <select aria-label="Category" onchange="bs(${k},'category',this.value);bs(${k},'cat',this.value)">${opts(Object.keys(AllC()), i.category || i.cat)}</select>
               <small id="bu${k}" style="text-align:right;font-weight:600"></small>
             </div>
           </div>
         `).join("") || empty("No items detected. Add one manually below.")}
-        <button class="link" style="margin-top:10px" onclick="B.items.push({name:'',qty:1,unit:'pcs',amount:NaN,cat:'Grocery',on:true});go('bill')">+ Add missing line item</button>
+        <button class="link" style="margin-top:10px" onclick="B.items.push({name:'',qty:1,unit:'pcs',amount:NaN,category:'Grocery',cat:'Grocery',on:true});go('bill')">+ Add missing line item</button>
       </div>
 
       <div class="card">
@@ -933,13 +919,13 @@
         S.items.push({
           id: id + k,
           name: i.name.trim(),
-          cat: i.cat,
+          cat: i.category || i.cat || "Grocery",
           qty: i.qty,
           unit: i.unit,
           price: +(i.amount / i.qty).toFixed(2),
           total: +i.amount,
           date: B.date,
-          pay: B.pay,
+          pay: B.payment || "Cash",
           store: (B.store || "").trim(),
           notes: "Scanned from bill"
         });
@@ -1237,7 +1223,6 @@
       try { localStorage.setItem("notif-date", today()); } catch (e) {}
     }
 
-    // --- Google Drive Persistent Auto-Connect Backup Engine ---
     const CLIENT_ID = "386974473840-bhnhm2qv91iq87c3lt78hp8b3gs2tp61.apps.googleusercontent.com";
     const FN = "spend-tracker.json";
     let tok = null, tc = null, timer = null;
@@ -1368,7 +1353,6 @@
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
     });
 
-    // --- Navigation Routing (Balanced 5-column layout with centered + button) ---
     const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget };
     const N = [
       ["home", "🏠", "Home"],
