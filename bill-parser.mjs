@@ -1,4 +1,4 @@
-// bill-parser.mjs - Self-Verifying Bilingual Gemini + Local Receipt Parser
+// bill-parser.mjs - Self-Verifying Bilingual Gemini + Local Receipt Parser (v2, accuracy fixes)
 
 export const UNITS = ["kg", "g", "L", "ml", "pcs"];
 export const CATS = [
@@ -7,23 +7,41 @@ export const CATS = [
   "Bills & Utilities", "Healthcare", "Shopping", "Education", "Miscellaneous"
 ];
 
+// Tried in order. If the first is retired / rate-limited / overloaded, the next is used.
+export const GEMINI_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+
+/* ------------------------------------------------------------------ *
+ * LINE-LEVEL REJECT PATTERNS (non-item lines on a receipt)
+ * Latin words now use \b word boundaries so real products are no longer
+ * rejected by accident (Cinthol, Cinnamon, Sachet, Tin, Headphones ...).
+ * Totals / GST / dates / times are now rejected too.
+ * ------------------------------------------------------------------ */
 export const REJECT_PATTERNS = [
-  /no[\s.:-]*\d+/i,
-  /road|street|nagar|salai|lane|pallavaram|chennai|tamil\s*nadu|pincode|pin[\s.:-]*\d{6}/i,
-  /தெரு|சாலை|நகர்|சென்னை|பல்லாவரம்|விலாசம்|அஞ்சல்/i,
-  /bill\s*no|bill\s*number|inv\s*no|invoice|estimate|cash\s*bill|memo|counter/i,
-  /ரசீது\s*எண்|பில்\s*எண்|விலைப்பட்டியல்/i,
-  /phone|mobile|cell|ph[\s.:-]*\d+/i,
-  /தொலைபேசி|அலைபேசி/i,
-  /gstin|gst\s*no|tin|fssai|cin|pan\s*no|hsn|sac/i,
-  /paid\s*[:=]|returned|change|balance|round\s*off|sub\s*total/i,
-  /payment|tender|cash\s*tender|cash\s*received/i,
-  /செலுத்தியது|மீதி|தொகை|நன்றி/i,
-  /thank\s*you|visit\s*again|save\s*trees|customer\s*copy|merchant\s*copy/i,
-  /cashier|terminal|pos\s*id|transaction\s*id|txn\s*id|ref\s*no|auth\s*code/i,
+  /\bno\b[\s.:-]*\d+/i,
+  /\b(road|rd|street|st|nagar|salai|lane|pallavaram|chennai|tamil\s*nadu|pincode)\b/i,
+  /\bpin[\s.:-]*\d{6}\b/i,
+  /தெரு|சாலை|நகர்|சென்னை|பல்லாவரம்|விலாசம்|அஞ்சல்/,
+  /\b(bill\s*no|bill\s*number|inv\.?\s*no|invoice|estimate|cash\s*bill|memo|counter)\b/i,
+  /ரசீது\s*எண்|பில்\s*எண்|விலைப்பட்டியல்/,
+  /\b(phone|mobile|mob|cell|tel|ph)\b[\s.:-]*\d*/i,
+  /தொலைபேசி|அலைபேசி/,
+  /\b(gstin|gst\s*no|tin|fssai|cin|pan\s*no|hsn|sac)\b/i,
+  /\b(paid|returned|change|balance|round\s*off|rounding|sub\s*total|grand\s*total)\b/i,
+  /\b(total|net\s*amt|net\s*amount|bill\s*amount|amount\s*payable|payable)\b/i,
+  /\b(cgst|sgst|igst|gst|vat|cess|tax|discount|savings?|you\s*saved)\b/i,
+  /\b(total\s*qty|total\s*items?|items?\s*[:=]|qty\s*[:=])/i,
+  /\b(payment|tender(ed)?|cash\s*received|upi|card\s*no)\b/i,
+  /செலுத்தியது|மீதி|மொத்தம்|தொகை|நன்றி/,
+  /\b(thank\s*you|visit\s*again|save\s*trees|customer\s*copy|merchant\s*copy)\b/i,
+  /\b(cashier|terminal|pos\s*id|transaction\s*id|txn\s*id|ref\s*no|auth\s*code)\b/i,
+  /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}\b/,   // date line
+  /\b\d{1,2}:\d{2}(:\d{2})?\s*(am|pm)?\b/i,     // time
   /^\s*\d{8,14}\s*$/,
   /^\s*[A-Z0-9-]{6,}\s*$/
 ];
+
+// Used ONLY on names returned by Gemini: reject only if the name STARTS like a summary line.
+const ITEM_NAME_REJECT = /^(grand\s*total|sub\s*total|total|net\s*amount|net\s*amt|bill\s*amount|cgst|sgst|igst|gst|vat|cess|tax|round\s*off|rounding|discount|change|balance|cash|paid|tendered|payment|items?|qty|quantity|thank\s*you)\b|மொத்தம்/i;
 
 export const TAMIL_GROCERY_KNOWLEDGE = [
   { triggers: [/துவரம்\s*பருப்பு/i, /துவரம்பருப்பு/i, /thuvaram\s*paruppu/i, /toor\s*dhal/i, /toor\s*dal/i], name: "Toor Dal", category: "Grains", unit: "kg" },
@@ -50,6 +68,20 @@ export const TAMIL_GROCERY_KNOWLEDGE = [
   { triggers: [/சோப்பு/i, /cinthol/i, /hamam/i, /soap/i], name: "Bath Soap", category: "Personal care", unit: "pcs" }
 ];
 
+// Latin triggers are wrapped so "oil" no longer matches "Toilet", "salt" no longer matches "Asphalt", etc.
+// (No lookbehind, so it also works on older iPhones / Safari.)
+const hasTamil = re => /[\u0B80-\u0BFF]/.test(re.source);
+const KNOWLEDGE = TAMIL_GROCERY_KNOWLEDGE.map(e => ({
+  ...e,
+  triggers: e.triggers.map(re =>
+    hasTamil(re) ? re : new RegExp(`(^|[^A-Za-z])(?:${re.source})(?![A-Za-z])`, "i")
+  )
+}));
+// Processed products must NOT be collapsed to the raw ingredient (Tomato Ketchup != Tomato)
+const PROCESSED_WORDS = /ketchup|sauce|pickle|puree|chips|soup|juice|jam|paste|powder|masala|mix|biscuit|noodles|cake/i;
+
+/* ------------------------------ helpers ------------------------------ */
+
 function safeNum(val) {
   const n = Number(val);
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
@@ -59,14 +91,55 @@ function normalize(str) {
   return String(str || "").replace(/\s+/g, " ").trim();
 }
 
+function titleCase(s) {
+  const t = normalize(s);
+  if (!/[A-Za-z]/.test(t)) return t;
+  if (t !== t.toLowerCase() && t !== t.toUpperCase()) return t; // already mixed case
+  return t.toLowerCase().replace(/(^|[\s\-/(])([a-z])/g, (m, a, b) => a + b.toUpperCase());
+}
+
+// OCR often reads digits as letters inside price-like tokens: "1O.OO" -> "10.00", "l20,5O" -> "120.50"
+function fixPriceTokens(text) {
+  return String(text || "").replace(
+    /(^|[^A-Za-z])([\dOoIl|SB]*\d[\dOoIl|SB]*[.,][\dOoIl|SB]{2,3})(?![\dA-Za-z])/g,
+    (m, pre, tok) =>
+      pre + tok.replace(/[Oo]/g, "0").replace(/[Il|]/g, "1").replace(/S/g, "5").replace(/B/g, "8")
+  );
+}
+
+// Returns [{v, dec, len}]; handles "1,250.00" (thousands) and "120,00" (decimal comma)
+function extractNumbers(text) {
+  const t = String(text || "")
+    .replace(/(\d),(\d{3})(?!\d)/g, "$1$2")
+    .replace(/(\d),(\d{1,2})(?!\d)/g, "$1.$2");
+  const out = [];
+  const re = /\d+(?:\.\d+)?/g;
+  let m;
+  while ((m = re.exec(t))) {
+    const digits = m[0].replace(".", "").length;
+    const v = Number(m[0]);
+    if (!Number.isFinite(v)) continue;
+    // 6+ digit integers are barcodes / codes / phone fragments, never prices
+    if (!m[0].includes(".") && digits >= 6) continue;
+    out.push({ v, dec: m[0].includes("."), len: digits });
+  }
+  return out;
+}
+
+/* ------------------------------ image helpers ------------------------------ */
+
 export function shrinkImage(file) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
       try {
-        const maxDim = 2000;
-        const ratio = Math.min(1, maxDim / Math.max(img.width, img.height));
+        // FIX: the old code limited the LONGEST side to 2000px, so a long thin shop receipt
+        // (e.g. 1000x4000) was shrunk to ~500px wide and the text became unreadable.
+        const MAX_LONG = 3600;
+        const MIN_WIDTH = 1200;
+        let ratio = Math.min(1, MAX_LONG / Math.max(img.width, img.height));
+        if (img.width * ratio < MIN_WIDTH) ratio = Math.min(1, MIN_WIDTH / img.width);
         const canvas = document.createElement("canvas");
         canvas.width = Math.max(1, Math.round(img.width * ratio));
         canvas.height = Math.max(1, Math.round(img.height * ratio));
@@ -129,62 +202,95 @@ export function loadTess() {
   return tessReady;
 }
 
-export async function localOcr(canvas, statusCb) {
-  await loadTess();
-  const result = await window.Tesseract.recognize(canvas, "eng+tam", {
-    logger: m => {
-      if (!statusCb || !m || !m.status) return;
-      const progress = typeof m.progress === "number" ? ` ${Math.round(m.progress * 100)}%` : "";
-      statusCb(`${m.status}${progress}`);
+// Grayscale + contrast stretch (+ upscale small images). Makes faded thermal prints far more readable to Tesseract.
+function preprocessForOcr(src) {
+  try {
+    const up = src.width < 1400 ? Math.min(2, 1400 / src.width) : 1;
+    const w = Math.round(src.width * up), h = Math.round(src.height * up);
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    const ctx = c.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(src, 0, 0, w, h);
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < d.length; i += 4) {
+      const g = Math.round(0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]);
+      d[i] = d[i + 1] = d[i + 2] = g;
+      hist[g]++;
     }
-  });
-  return (result && result.data && result.data.text) || "";
+    const total = w * h;
+    let lo = 0, hi = 255, acc = 0;
+    for (let i = 0; i < 256; i++) { acc += hist[i]; if (acc >= total * 0.01) { lo = i; break; } }
+    acc = 0;
+    for (let i = 255; i >= 0; i--) { acc += hist[i]; if (acc >= total * 0.01) { hi = i; break; } }
+    if (hi - lo < 30) { lo = 0; hi = 255; }
+    const span = hi - lo;
+    for (let i = 0; i < d.length; i += 4) {
+      const v = Math.max(0, Math.min(255, ((d[i] - lo) * 255) / span));
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  } catch (_) {
+    return src;
+  }
 }
 
-/**
- * Self-Verifying Gemini Parser
- * Performs verification calculations & column-mapping before finalizing JSON.
- */
+export async function localOcr(canvas, statusCb) {
+  await loadTess();
+  const prepared = preprocessForOcr(canvas);
+  const logger = m => {
+    if (!statusCb || !m || !m.status) return;
+    const progress = typeof m.progress === "number" ? ` ${Math.round(m.progress * 100)}%` : "";
+    statusCb(`${m.status}${progress}`);
+  };
+  let worker = null;
+  try {
+    // PSM 6 (uniform block) + preserved spaces keeps receipt columns apart (qty | rate | amount)
+    worker = await window.Tesseract.createWorker("eng+tam", 1, { logger });
+    await worker.setParameters({ tessedit_pageseg_mode: "6", preserve_interword_spaces: "1" });
+    const { data } = await worker.recognize(prepared);
+    return (data && data.text) || "";
+  } catch (_) {
+    const result = await window.Tesseract.recognize(prepared, "eng+tam", { logger });
+    return (result && result.data && result.data.text) || "";
+  } finally {
+    if (worker) { try { await worker.terminate(); } catch (_) { /* ignore */ } }
+  }
+}
+
+/* ------------------------------ Gemini parser ------------------------------ */
+
 export async function parseWithGemini(base64Data, apiKey, knownProducts = [], defaultDate, statusCb) {
   if (statusCb) statusCb("Inspecting columns & verifying totals with Gemini AI...");
 
-  const prompt = `You are an expert bilingual Indian receipt parser. The bill may be in Tamil (தமிழ்), English, or Tanglish.
+  const catalog = Array.isArray(knownProducts) && knownProducts.length
+    ? knownProducts.slice(0, 100).join(", ")
+    : "(None provided)";
 
-BEFORE CREATING THE FINAL JSON, PERFORM THESE VERIFICATION CHECKS:
+  const prompt = `You are an expert bilingual Indian receipt parser. The bill may be in Tamil (தமிழ்), English, or Tanglish, and may be a photo of a long, faded thermal print.
 
-1. COLUMN ANALYSIS:
-   - Identify header column layout: [Item Name | Quantity/Weight | Rate/MRP | Net Amount].
-   - In Indian and Tamil grocery bills, the LAST column of each item row is always the final item amount.
-   - Do NOT take barcode, SKU, serial number, or item codes as price or quantity.
+READ THE BILL IN THIS ORDER:
 
-2. TAMIL TRANSLATION & ENGLISH CONVERSION:
-   - All product names in the final JSON MUST be in clear English Title Case.
-   - If printed in Tamil script or Tanglish, translate into exact common English (e.g., 'துவரம் பருப்பு' -> 'Toor Dal', 'சீரகம்' -> 'Cumin Seeds', 'எண்ணெய்' -> 'Cooking Oil', 'தக்காளி' -> 'Tomato', 'வெங்காயம்' -> 'Onion').
-   - Match against this catalog where appropriate:
-     ${Array.isArray(knownProducts) && knownProducts.length ? knownProducts.slice(0, 100).join(", ") : "(None provided)"}
+1. COLUMNS: Find the header (Item | Qty/Weight | Rate/MRP | Amount). The LAST number on an item row is the line amount. Never use barcodes, item codes, HSN codes, serial numbers (1,2,3...) or MRP as the amount or quantity.
+2. MULTI-LINE ITEMS: If an item name sits on one line and its numbers on the next line, they belong to ONE item.
+3. QTY x RATE CHECK: For every item verify qty x rate = amount (allow small rounding). If it does not, re-read the digits (common misreads: 1/7, 0/6/8, 3/8, 5/6) before answering. Loose goods are often weighed, e.g. 1.250 kg.
+4. NAMES: Every product name must be clear English Title Case. Translate Tamil / Tanglish (e.g. 'துவரம் பருப்பு' -> 'Toor Dal', 'சீரகம்' -> 'Cumin Seeds', 'எண்ணெய்' -> 'Cooking Oil', 'தக்காளி' -> 'Tomato', 'வெங்காயம்' -> 'Onion'). Keep brand names in English letters. Prefer names from this catalog when the item matches: ${catalog}
+5. TOTAL: "total" is the final payable amount PRINTED on the bill (labels: Total Amt, Total Amount, Bill Amount, Net Amount, Grand Total, மொத்தம்), usually bottom right. Copy the printed value; do NOT compute it yourself. Do not confuse it with 'Total Qty' or 'Total Items'.
+6. SUM CHECK: Add up your item amounts. If the sum is far from the printed total, you have probably missed or misread an item - look again. Do NOT invent items to fill a gap. Small differences (round-off, bag charge, bill discount) are fine.
+7. NEVER list as items: store address, phone numbers, PIN, GSTIN, bill number, date/time, CGST/SGST/GST lines, discount/round-off lines, payment lines (Cash Tendered, Balance Returned), 'Total Qty', 'Items:' counts.
 
-3. ITEM COUNT VERIFICATION:
-   - Count the total number of distinct purchased items. Check if the bill prints a count like 'Items: X' or 'Total Qty: Y'.
-
-4. ARITHMETIC VERIFICATION & RECONCILIATION:
-   - Locate the grand total. It is labeled as 'Total Amt', 'Total Amount', 'Bill Amount', 'Net Amount', 'Amount', 'Total', or 'மொத்தம்' and is almost always printed at the bottom right, below all items.
-   - Sum up the amounts of all purchased item lines: LineSum = (Item1_amount + Item2_amount + ...).
-   - Compare LineSum with the printed Total:
-     * If LineSum equals printed Total, verification succeeds!
-     * If there is a small discrepancy (round-off, bag charge, or bill-level discount), reconcile so the item amounts match real charges.
-     * Do NOT invent extra items to fill gaps.
-
-5. STRICT EXCLUSIONS:
-   - DO NOT extract store address, phone numbers, road, PIN, GSTIN, Bill No, date, CGST/SGST lines, tender/payment summary ('Cash Tendered', 'Balance Returned') as items.
-
-Output strictly adhering to the JSON schema.`;
+Output strictly in the JSON schema.`;
 
   const geminiSchema = {
     type: "OBJECT",
     properties: {
       store: { type: "STRING", description: "Shop or merchant name only, or empty string" },
       date: { type: "STRING", description: "Bill date as YYYY-MM-DD or empty string" },
-      total: { type: "NUMBER", description: "Final verified payable amount printed on bill" },
+      total: { type: "NUMBER", description: "Final payable amount PRINTED on the bill (not computed)" },
       payment: { type: "STRING", enum: ["Cash", "UPI", "Card", ""], description: "Payment mode detected" },
       items: {
         type: "ARRAY",
@@ -204,35 +310,40 @@ Output strictly adhering to the JSON schema.`;
     required: ["store", "date", "total", "payment", "items"]
   };
 
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: "image/jpeg", data: base64Data } }
-          ]
-        }],
-        generationConfig: {
-          response_mime_type: "application/json",
-          response_schema: geminiSchema,
-          temperature: 0.1
-        }
-      })
+  const body = JSON.stringify({
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: "image/jpeg", data: base64Data } }
+      ]
+    }],
+    generationConfig: {
+      response_mime_type: "application/json",
+      response_schema: geminiSchema,
+      temperature: 0.1
     }
-  );
+  });
 
-  if (!response.ok) {
+  let resJson = null;
+  let lastErr = null;
+  for (const model of GEMINI_MODELS) {
+    const response = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body }
+    );
+    if (response.ok) { resJson = await response.json(); break; }
     const err = await response.json().catch(() => ({}));
-    throw new Error(err.error?.message || `Gemini API error (Status ${response.status})`);
+    lastErr = new Error(err.error?.message || `Gemini API error (Status ${response.status})`);
+    // model retired / quota / overloaded -> try next model; anything else (bad key, bad request) -> stop
+    if (![404, 429, 500, 503].includes(response.status)) throw lastErr;
   }
+  if (!resJson) throw lastErr || new Error("Gemini request failed.");
 
-  const resJson = await response.json();
   const textOut = resJson.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!textOut) throw new Error("Could not parse receipt contents.");
+  if (!textOut) {
+    const block = resJson.promptFeedback?.blockReason;
+    throw new Error(block ? `Receipt blocked by AI (${block}).` : "Could not parse receipt contents.");
+  }
 
   let parsed;
   try {
@@ -247,7 +358,7 @@ Output strictly adhering to the JSON schema.`;
       const a = safeNum(i.amount);
       const catName = CATS.includes(i.category) ? i.category : "Grocery";
       return {
-        name: String(i.name || "").trim().slice(0, 40),
+        name: titleCase(String(i.name || "").trim()).slice(0, 40),
         qty: q,
         unit: UNITS.includes(i.unit) ? i.unit : "pcs",
         amount: a,
@@ -256,127 +367,196 @@ Output strictly adhering to the JSON schema.`;
         on: true
       };
     })
-    .filter(i => i.name && i.amount > 0 && !REJECT_PATTERNS.some(re => re.test(i.name)));
+    // FIX: only reject summary-style NAMES (starts with Total / GST / Discount ...).
+    // The old code ran the address/phone patterns over product names and dropped real items.
+    .filter(i => i.name && /[\p{L}]/u.test(i.name) && i.amount > 0 && !ITEM_NAME_REJECT.test(i.name));
 
-  // Verification sanity check on output
+  const itemsSum = Math.round(cleanItems.reduce((s, it) => s + it.amount, 0) * 100) / 100;
   let finalTotal = safeNum(parsed.total);
-  const itemsSum = cleanItems.reduce((s, it) => s + it.amount, 0);
-  if (!finalTotal && itemsSum > 0) {
-    finalTotal = Math.round(itemsSum * 100) / 100;
+  if (!finalTotal && itemsSum > 0) finalTotal = itemsSum;
+
+  // Real verification in code (the model cannot be trusted to do its own arithmetic)
+  let warning = "";
+  const tol = Math.max(2, finalTotal * 0.01);
+  if (cleanItems.length && finalTotal && Math.abs(itemsSum - finalTotal) > tol) {
+    warning = `Items add up to ${itemsSum} but the bill total is ${finalTotal}. Please check the items.`;
   }
 
-  return {
+  const result = {
     store: String(parsed.store || "").trim().slice(0, 40),
     date: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date || "") ? parsed.date : defaultDate,
     total: finalTotal,
     payment: ["Cash", "UPI", "Card"].includes(parsed.payment) ? parsed.payment : "Cash",
     items: cleanItems
   };
+  if (warning) result.warning = warning; // extra optional field; existing code can ignore it
+  return result;
 }
 
-/**
- * Enhanced Local OCR Fallback with Column & Total Verification
- */
-export function parseLocalText(rawText, defaultDate) {
-  const lines = String(rawText || "")
-    .replace(/\r/g, "\n")
-    .split("\n")
-    .map(normalize)
-    .filter(Boolean);
+/* ------------------------------ Local OCR text parser ------------------------------ */
 
-  let store = "";
-  for (const line of lines.slice(0, 6)) {
-    if (!REJECT_PATTERNS.some(re => re.test(line)) && line.length >= 3 && !/^\d/.test(line)) {
-      store = line.slice(0, 40);
-      break;
-    }
-  }
+const TOTAL_LABEL = /(grand\s*total|total\s*amt|total\s*amount|net\s*amount|net\s*amt|bill\s*amount|amount\s*payable|payable|total|மொத்தம்)/i;
+const TOTAL_SKIP = /\b(qty|quantity|items?|pcs|nos|tax|gst|cgst|sgst|igst|discount|savings?)\b/i;
 
-  let date = defaultDate;
-  const dMatch = rawText.match(/([0-3]?\d)[\/\-.]([01]?\d)[\/\-.]((?:20)?\d\d)/);
-  if (dMatch) {
-    let dd = +dMatch[1], mm = +dMatch[2], yy = +dMatch[3];
-    if (yy < 100) yy += 2000;
-    if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) date = `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
-  }
-
-  // Look for total labels at the bottom of the bill
-  let total = 0;
-  const totalRegex = /(?:total\s*amt|total\s*amount|bill\s*amount|net\s*amount|grand\s*total|amount|total|மொத்தம்)[^\d\n]*([0-9,]+\.?[0-9]{0,2})/i;
-  for (let j = lines.length - 1; j >= Math.max(0, lines.length - 10); j--) {
-    const match = lines[j].match(totalRegex);
-    if (match) {
-      const val = parseFloat(match[1].replace(/,/g, ""));
-      if (val > 0 && val < 500000) {
-        total = val;
-        break;
-      }
-    }
-  }
-
-  const items = [];
-  for (const line of lines) {
-    if (REJECT_PATTERNS.some(re => re.test(line))) continue;
-
-    const nums = (line.replace(/,/g, "").match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(Number.isFinite);
+function findTotalCandidates(lines) {
+  const cands = [];
+  for (let j = lines.length - 1; j >= Math.max(0, lines.length - 20); j--) {
+    const line = lines[j];
+    const lm = line.match(TOTAL_LABEL);
+    if (!lm || TOTAL_SKIP.test(line)) continue;
+    let nums = extractNumbers(line.slice(lm.index + lm[0].length));
+    if (!nums.length && lines[j + 1] && !/\p{L}/u.test(lines[j + 1])) nums = extractNumbers(lines[j + 1]);
     if (!nums.length) continue;
+    const dec = nums.filter(n => n.dec);
+    const pick = (dec.length ? dec[dec.length - 1] : nums[nums.length - 1]).v;
+    if (pick > 0 && pick < 500000) cands.push(pick);
+  }
+  return cands;
+}
 
-    // The line amount in Indian bills is almost always the rightmost number
-    let amount = nums[nums.length - 1];
-    if (!amount || amount <= 0 || amount > 500000) continue;
+function parseItemLine(origLine) {
+  if (REJECT_PATTERNS.some(re => re.test(origLine))) return null;
 
-    let qty = 1, unit = "pcs";
-    const uMatch = line.match(/(\d+(?:\.\d+)?)\s*(kg|kgs|g|gm|gms|l|ltr|ltrs|ml|pcs|nos|கிலோ|கிராம்|லிட்டர்)/i);
-    if (uMatch) {
-      qty = safeNum(uMatch[1]) || 1;
-      const uStr = uMatch[2].toLowerCase();
-      if (uStr.startsWith("kg") || uStr === "கிலோ") unit = "kg";
-      else if (uStr.startsWith("g") || uStr === "கிராம்") unit = "g";
-      else if (uStr.startsWith("l") || uStr === "லிட்டர்") unit = "L";
-      else if (uStr.startsWith("ml")) unit = "ml";
+  // strip leading barcode / serial number
+  let line = origLine
+    .replace(/^\s*\d{6,14}\s+/, "")
+    .replace(/^\s*\d{1,3}[.)\-]?\s+(?=\p{L})/u, "");
+
+  // explicit unit token: "1.5 kg", "500 g", "1 ltr", "கிலோ" ...
+  let unitQty = 0;
+  let unit = "";
+  const uRe = /(\d+(?:[.,]\d+)?)\s*(kgs?|kilo|gms?|grams?|g|ltrs?|litres?|liters?|ml|l|pcs|nos|கிலோ|கிராம்|லிட்டர்)(?![\p{L}\p{M}])/iu;
+  const uMatch = line.match(uRe);
+  if (uMatch) {
+    unitQty = safeNum(uMatch[1].replace(",", "."));
+    const u = uMatch[2].toLowerCase();
+    if (u.startsWith("k") || u === "கிலோ") unit = "kg";
+    else if (u === "ml") unit = "ml";
+    else if (u.startsWith("l") || u === "லிட்டர்") unit = "L";
+    else if (u.startsWith("g") || u === "கிராம்") unit = "g";
+    else unit = "pcs";
+    line = line.replace(uRe, " ");
+  }
+
+  const nums = extractNumbers(line);
+  if (!nums.length) return null;
+
+  // Indian bills: the LAST number on the row is the net line amount
+  const amount = nums[nums.length - 1].v;
+  if (!amount || amount <= 0 || amount > 500000) return null;
+  const others = nums.slice(0, -1).map(n => n.v);
+
+  // Find qty x rate = amount among the remaining numbers (qty column comes before rate)
+  let pairQty = 0;
+  const tol = Math.max(0.6, amount * 0.015);
+  outer: for (let a = 0; a < others.length; a++) {
+    for (let b = a + 1; b < others.length; b++) {
+      if (others[a] > 0 && Math.abs(others[a] * others[b] - amount) <= tol) { pairQty = others[a]; break outer; }
     }
+  }
 
-    let cleanName = line
-      .replace(/(\d+(?:\.\d+)?)\s*(kg|kgs|g|gm|gms|l|ltr|ltrs|ml|pcs|nos|கிலோ|கிராம்|லிட்டர்)/gi, "")
-      .replace(/\s+\d+(?:\.\d+)?(?:\s+\d+(?:\.\d+)?)?\s*$/, "")
-      .replace(/[0-9*#@₹$:%|]/g, "")
-      .trim();
+  let qty = unitQty || 1;
+  if (pairQty) qty = unitQty ? safeNum(unitQty * pairQty) : pairQty;
+  if (!unit) unit = "pcs";
 
-    cleanName = normalize(cleanName);
-    if (cleanName.length < 2 || /^(qty|rate|amount|price|item|product)$/i.test(cleanName)) continue;
+  let cleanName = line
+    .replace(/[0-9*#@₹$:%|=_~^<>[\]{}()\\/]+/g, " ")
+    .replace(/^[\s.,\-–]+|[\s.,\-–]+$/g, "");
+  cleanName = normalize(cleanName);
+  if ((cleanName.match(/\p{L}/gu) || []).length < 2) return null; // FIX: names like "//" from date lines are dropped
+  if (/^(qty|rate|amount|price|item|product|mrp|description)$/i.test(cleanName)) return null;
 
-    let category = "Grocery";
-    for (const entry of TAMIL_GROCERY_KNOWLEDGE) {
-      if (entry.triggers.some(re => re.test(cleanName) || re.test(line))) {
+  let category = "Grocery";
+  if (!PROCESSED_WORDS.test(cleanName)) {
+    for (const entry of KNOWLEDGE) {
+      if (entry.triggers.some(re => re.test(cleanName))) {
         cleanName = entry.name;
         category = entry.category;
         if (unit === "pcs" && entry.unit) unit = entry.unit;
         break;
       }
     }
-
-    items.push({
-      name: cleanName.slice(0, 40),
-      qty: safeNum(qty) || 1,
-      unit: UNITS.includes(unit) ? unit : "pcs",
-      amount: safeNum(amount),
-      category,
-      cat: category,
-      on: true
-    });
-  }
-
-  // Arithmetic reconciliation: If no printed total found, compute sum
-  const sumItems = items.reduce((s, it) => s + it.amount, 0);
-  if (!total && items.length) {
-    total = Math.round(sumItems * 100) / 100;
+  } else {
+    cleanName = titleCase(cleanName);
   }
 
   return {
+    name: titleCase(cleanName).slice(0, 40),
+    qty: safeNum(qty) || 1,
+    unit: UNITS.includes(unit) ? unit : "pcs",
+    amount: safeNum(amount),
+    category,
+    cat: category,
+    on: true
+  };
+}
+
+export function parseLocalText(rawText, defaultDate) {
+  const text = fixPriceTokens(String(rawText || "").replace(/\r/g, "\n"));
+  const lines = text.split("\n").map(normalize).filter(Boolean);
+
+  // Store: first real-looking line at the top (the old code skipped any line containing 'chennai', 'road', etc.)
+  const STORE_SKIP = /\b(gstin|gst|tin|invoice|bill|tax|phone|ph|mobile|cell|tel|date|cash|estimate|memo)\b|^\d/i;
+  let store = "";
+  for (const line of lines.slice(0, 6)) {
+    if ((line.match(/\p{L}/gu) || []).length >= 3 && !STORE_SKIP.test(line) && !/\b\d{6,}\b/.test(line)) {
+      store = line.slice(0, 40);
+      break;
+    }
+  }
+
+  let date = defaultDate;
+  const dMatch = text.match(/([0-3]?\d)[\/\-.]([01]?\d)[\/\-.]((?:20)?\d\d)(?!\d)/);
+  if (dMatch) {
+    let dd = +dMatch[1], mm = +dMatch[2], yy = +dMatch[3];
+    if (yy < 100) yy += 2000;
+    if (dd >= 1 && dd <= 31 && mm >= 1 && mm <= 12) date = `${yy}-${String(mm).padStart(2, "0")}-${String(dd).padStart(2, "0")}`;
+  }
+
+  // Join "name line" + "numbers-only line" that OCR split in two
+  const joined = [];
+  for (let i = 0; i < lines.length; i++) {
+    const cur = lines[i];
+    const next = lines[i + 1];
+    if (
+      next &&
+      /\p{L}/u.test(cur) && !/\d/.test(cur) &&
+      /\d/.test(next) && !/\p{L}/u.test(next) &&
+      !REJECT_PATTERNS.some(re => re.test(cur))
+    ) {
+      joined.push(`${cur} ${next}`);
+      i++;
+    } else {
+      joined.push(cur);
+    }
+  }
+
+  const items = [];
+  for (const line of joined) {
+    const it = parseItemLine(line);
+    if (it) items.push(it);
+  }
+
+  // Total: pick the printed-total candidate that agrees with the item sum; never use 'Total Qty'
+  const sumItems = Math.round(items.reduce((s, it) => s + it.amount, 0) * 100) / 100;
+  const cands = findTotalCandidates(lines);
+  let total = 0;
+  if (cands.length) {
+    const tol = Math.max(1.5, sumItems * 0.01);
+    const agreeing = cands.filter(c => Math.abs(c - sumItems) <= tol);
+    total = agreeing.length ? agreeing[0] : cands[0];
+  }
+  if (!total && items.length) total = sumItems;
+
+  const result = {
     store,
     date,
     total: safeNum(total),
-    payment: /upi|gpay/i.test(rawText) ? "UPI" : /card/i.test(rawText) ? "Card" : "Cash",
+    payment: /upi|gpay|phonepe|paytm/i.test(rawText) ? "UPI" : /\bcard\b|visa|mastercard|rupay/i.test(rawText) ? "Card" : "Cash",
     items
   };
+  if (items.length && total && Math.abs(sumItems - total) > Math.max(2, total * 0.01)) {
+    result.warning = `Items add up to ${sumItems} but the bill total is ${safeNum(total)}. Please check the items.`;
+  }
+  return result;
 }
