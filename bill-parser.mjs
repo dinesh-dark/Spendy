@@ -9,7 +9,8 @@ export const CATS = [
 
 // Tried in order. If a model is retired / not available to your key / rate-limited / overloaded, the next one is used.
 // (Gemini 2.5 models are now restricted to existing users, so they are no longer listed.)
-export const GEMINI_MODELS = ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"];
+export const GEMINI_MODELS = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"];
+export const GEMINI_TIMEOUT_MS = 40000; // a model that does not answer in time is skipped (no more endless "Extracting...")
 
 /* ------------------------------------------------------------------ *
  * LINE-LEVEL REJECT PATTERNS (non-item lines on a receipt)
@@ -571,16 +572,23 @@ Output strictly in the JSON schema.`;
 
   let resJson = null;
   const errors = [];
-  for (const model of GEMINI_MODELS) {
+  for (let mi = 0; mi < GEMINI_MODELS.length; mi++) {
+    const model = GEMINI_MODELS[mi];
+    if (statusCb) statusCb(`Reading bill with ${model} (attempt ${mi + 1} of ${GEMINI_MODELS.length})...`);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), GEMINI_TIMEOUT_MS);
     let response;
     try {
       response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(apiKey)}`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body }
+        { method: "POST", headers: { "Content-Type": "application/json" }, body, signal: ctrl.signal }
       );
     } catch (netErr) {
+      clearTimeout(timer);
+      if (netErr && netErr.name === "AbortError") { errors.push(`${model}: no answer in ${GEMINI_TIMEOUT_MS / 1000}s`); continue; }
       throw new Error("Network error: " + (netErr && netErr.message ? netErr.message : "offline"));
     }
+    clearTimeout(timer);
     if (response.ok) { resJson = await response.json(); break; }
     const err = await response.json().catch(() => ({}));
     const msg = err.error?.message || `Gemini API error (Status ${response.status})`;
