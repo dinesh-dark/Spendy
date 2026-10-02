@@ -258,7 +258,7 @@
       max-width: 480px;
       margin: 0 auto;
       display: grid;
-      grid-template-columns: repeat(6, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       align-items: center;
       padding: 6px 0;
     }
@@ -274,13 +274,13 @@
     nav button span { display: block; font-size: 20px; }
     nav button.on { color: var(--blue); font-weight: 600; }
     nav .plus {
-      width: 44px;
-      height: 44px;
+      width: 48px;
+      height: 48px;
       border-radius: 50%;
       background: var(--blue);
       color: #fff;
-      font-size: 24px;
-      margin: -20px auto 0;
+      font-size: 26px;
+      margin: -22px auto 0;
       display: block;
       box-shadow: 0 4px 12px #1d4ed855;
     }
@@ -323,7 +323,7 @@
       ["Cooking Oil", "🛢️", "Grocery"],
       ["Sugar", "🍬", "Grocery"],
       ["Salt", "🧂", "Grocery"],
-      ["Mustard / Kadugu", "🌶️️", "Grocery"],
+      ["Mustard / Kadugu", "🌶️", "Grocery"],
       ["Cumin / Jeera", "🌶️", "Grocery"],
       ["Pepper / Milagu", "🌶️", "Grocery"],
       ["Spices & Masala", "🌶️", "Grocery"],
@@ -385,7 +385,7 @@
       "Electricity": "⚡",
       "Mobile & Internet": "📶",
       "Subscriptions": "🔁",
-      "Insurance": "🛡️️",
+      "Insurance": "🛡️",
       "Loan / EMI": "🏦",
       "Other bills": "🧾"
     };
@@ -438,7 +438,7 @@
       go('bill');
     }
 
-    // Attach to window so inline onclick handlers work seamlessly with modules
+    // Window bindings for event handlers
     window.go = go;
     window.shift = shift;
     window.editItem = editItem;
@@ -500,7 +500,7 @@
         <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Smart OCR & Item Knowledge</small></button>
         <button class="tile" onclick="bMo='${cur}';go('budget')">🎯<b>Monthly Budgets</b><small>Set custom limit per month</small></button>
         <button class="tile" onclick="go('rep')">📊<b>View reports</b><small>Insights &amp; trends</small></button>
-        <button class="tile" onclick="go('price')">🏷️️<b>Price tracker</b><small>Compare stores</small></button>
+        <button class="tile" onclick="go('price')">🏷️<b>Price tracker</b><small>Compare stores</small></button>
         <button class="tile" onclick="go('bills')">🔔<b>Bills &amp; EMIs</b><small>Reminders & tracking</small></button>
         <button class="tile" onclick="go('prod')">🛒<b>My products</b><small>Custom item list</small></button>
         <button class="tile" onclick="go('settings')">⚙️<b>AI &amp; Settings</b><small>Name &amp; Gemini Key</small></button>
@@ -1368,15 +1368,14 @@
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
     });
 
-    // --- Navigation Routing ---
+    // --- Navigation Routing (Balanced 5-column layout with centered + button) ---
     const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget };
     const N = [
       ["home", "🏠", "Home"],
       ["hist", "🧾", "History"],
       ["add"],
-      ["rep", "📊", "Reports"],
       ["price", "🏷️", "Prices"],
-      ["settings", "⚙️", "Settings"]
+      ["rep", "📊", "Reports"]
     ];
 
     function go(x) {
