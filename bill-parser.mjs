@@ -535,7 +535,7 @@ Output strictly in the JSON schema.`;
       store: { type: "STRING", description: "Shop or merchant name only, or empty string" },
       date: { type: "STRING", description: "Bill date as YYYY-MM-DD or empty string" },
       total: { type: "NUMBER", description: "Final payable amount PRINTED on the bill (not computed)" },
-      payment: { type: "STRING", enum: ["Cash", "UPI", "Card", ""], description: "Payment mode detected" },
+      payment: { type: "STRING", enum: ["Cash", "UPI", "Card"], description: "Payment mode detected (Cash if not shown)" },
       items: {
         type: "ARRAY",
         items: {
