@@ -772,7 +772,7 @@
         let parsedJson;
         if (S.geminiKey) {
           try {
-            parsedJson = await parseWithGemini(base64Data, S.geminiKey, Object.keys(AllC()).join(", "), today(), st => {
+            parsedJson = await parseWithGemini(base64Data, S.geminiKey, allP().map(p => p[0]), today(), st => {
               B.status = st;
               const el = $("#bstatus");
               if (el) el.textContent = st;
