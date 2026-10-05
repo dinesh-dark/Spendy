@@ -1250,7 +1250,7 @@
 
     const CLIENT_ID = "386974473840-bhnhm2qv91iq87c3lt78hp8b3gs2tp61.apps.googleusercontent.com";
     const FN = "spend-tracker.json";
-    let tok = null, tc = null, timer = null;
+    let tok = null, tc = null, timer = null, refreshTimer = null;
 
     const ls = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
     const cfg = () => !CLIENT_ID.startsWith("PASTE");
@@ -1289,11 +1289,13 @@
         callback: r => {
           if (r && r.access_token) {
             tok = r.access_token;
+            const lifeMs = ((r.expires_in || 3600) - 300) * 1000;
             try {
               localStorage.setItem("gd", "1");
               localStorage.setItem("gd_token", tok);
-              localStorage.setItem("gd_exp", String(Date.now() + ((r.expires_in || 3600) - 300) * 1000));
+              localStorage.setItem("gd_exp", String(Date.now() + lifeMs));
             } catch (e) {}
+            scheduleRefresh(lifeMs);
             setSt("Connected & ready to sync");
             if (v == "home") go("home");
             sync();
@@ -1308,19 +1310,34 @@
       return true;
     }
 
-    function autoAuthenticate() {
+    function scheduleRefresh(ms) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (inWebView() || !ls("gd")) return;
+      // Reissue a bit before the token actually expires, so a tab/app left open
+      // in the background keeps syncing without ever hitting an expired token.
+      refreshTimer = setTimeout(() => { if (gInit()) tc.requestAccessToken({ prompt: "none" }); }, Math.max(ms, 5000));
+    }
+
+    function autoAuthenticate(retriesLeft = 5) {
       if (inWebView()) return;
       const storedTok = ls("gd_token"), exp = +(ls("gd_exp") || 0);
       if (storedTok && exp > Date.now()) {
         tok = storedTok;
         setSt("Connected & ready to sync");
+        scheduleRefresh(exp - Date.now());
         sync();
         return;
       }
-      if (ls("gd") && gInit()) {
+      if (!ls("gd")) return;
+      if (gInit()) {
         // "none" is the documented silent value: reissue the token with no visible UI
         // if possible, and simply fail quietly (via error_callback) if it isn't.
         tc.requestAccessToken({ prompt: "none" });
+      } else if (retriesLeft > 0) {
+        // The Google Identity Services script (loaded async) may not have finished
+        // loading yet on a cold open over a slow connection - retry briefly instead
+        // of silently giving up and showing "not connected".
+        setTimeout(() => autoAuthenticate(retriesLeft - 1), 800);
       }
     }
 
