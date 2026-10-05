@@ -106,6 +106,7 @@ export const TAMIL_GROCERY_KNOWLEDGE = [
   { triggers: [/பட்டை/i, /cinnamon/i], name: "Cinnamon", category: "Grocery", unit: "g" },
   { triggers: [/பெருங்காயம்/i, /asafoetida/i, /hing/i], name: "Asafoetida", category: "Grocery", unit: "g" },
   { triggers: [/புளி/i, /tamarind/i], name: "Tamarind", category: "Grocery", unit: "g" },
+  { triggers: [/கற்பாசி/i, /கல்பாசி/i, /kalpasi/i, /kalpaasi/i, /black\s*stone\s*flower/i, /dagad\s*phool/i, /dagad\s*ful/i], name: "Kalpasi", category: "Grocery", unit: "g" },
   { triggers: [/தேயிலை/i, /டீ\s*தூள்/i, /tea\s*(powder|dust)/i], name: "Tea Powder", category: "Grocery", unit: "g", proc: true },
   { triggers: [/காபி\s*தூள்/i, /coffee\s*powder/i, /filter\s*coffee/i], name: "Coffee Powder", category: "Grocery", unit: "g", proc: true },
   { triggers: [/வேர்க்கடலை/i, /groundnut/i, /peanut/i], name: "Groundnut", category: "Grocery", unit: "kg" },
@@ -528,6 +529,7 @@ READ THE BILL IN THIS ORDER:
 5. TOTAL: "total" is the final payable amount PRINTED on the bill (labels: Total Amt, Total Amount, Bill Amount, Net Amount, Grand Total, மொத்தம்), usually bottom right. Copy the printed value; do NOT compute it yourself. Do not confuse it with 'Total Qty' or 'Total Items'.
 6. SUM CHECK: Add up your item amounts. If the sum is far from the printed total, you have probably missed or misread an item - look again. Do NOT invent items to fill a gap. Small differences (round-off, bag charge, bill discount) are fine.
 7. NEVER list as items: store address, phone numbers, PIN, GSTIN, bill number, date/time, CGST/SGST/GST lines, discount/round-off lines, payment lines (Cash Tendered, Balance Returned), 'Total Qty', 'Items:' counts.
+8. NAME MUST NEVER BE A BARE CATEGORY WORD. The "name" field is the specific product, never one of the category labels (Vegetables, Grocery, Grains, Dairy, Meat & fish, Household, Personal care, Miscellaneous, etc.) used on its own as if it were the product. This matters most for items that are not common/packaged goods - unusual vegetables, herbs, spices, or regional ingredients (e.g. fenugreek, garlic, kalpasi/black stone flower, curry leaves, asafoetida). If you are not fully sure what an item is, still give your single best specific guess at the actual product name exactly as printed or implied on the bill, in Title Case - never fall back to naming it after its category. A "category" field equal to the "name" field is always wrong.
 
 Output strictly in the JSON schema.`;
 

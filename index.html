@@ -1240,7 +1240,8 @@
 
     const ls = k => { try { return localStorage.getItem(k); } catch (e) { return null; } };
     const cfg = () => !CLIENT_ID.startsWith("PASTE");
-    let sst = !cfg() ? "Not set up yet. Add your Google client ID." : ls("gd") ? "Connected" : "Not connected. Sign in to back up to Google Drive.";
+    const inWebView = () => !!(window.Capacitor || /; ?wv\)|FBAN|FBAV|Instagram/i.test(navigator.userAgent));
+    let sst = !cfg() ? "Not set up yet. Add your Google client ID." : inWebView() ? "Google sign-in isn't supported inside this installed app yet — open the web version in your phone's browser to back up." : ls("gd") ? "Connected" : "Not connected. Sign in to back up to Google Drive.";
     const setSt = t => { sst = t; const e = $("#gst"); if (e) e.textContent = t; };
     const gcard = () => `<div class="card"><div class="head"><b>Google Drive backup</b>${tok ? `<button class="link" onclick="sync()">Sync now</button>` : `<button class="link" onclick="gIn()">${ls("gd") ? "Reconnect" : "Sign in"}</button>`}</div><small id="gst">${esc(sst)}</small></div>`;
 
@@ -1286,14 +1287,15 @@
             setSt("Sign-in failed. Try reconnecting.");
           }
         },
-        error_callback: () => {
-          setSt("Session expired. Tap Reconnect to sync.");
+        error_callback: e => {
+          setSt((e && e.type == "popup_failed_to_open") || inWebView() ? "Google blocks sign-in inside this installed app. Open the web version in your phone's browser to back up." : "Session expired. Tap Reconnect to sync.");
         }
       });
       return true;
     }
 
     function autoAuthenticate() {
+      if (inWebView()) return;
       const storedTok = ls("gd_token"), exp = +(ls("gd_exp") || 0);
       if (storedTok && exp > Date.now()) {
         tok = storedTok;
@@ -1302,12 +1304,15 @@
         return;
       }
       if (ls("gd") && gInit()) {
-        tc.requestAccessToken({ prompt: "" });
+        // "none" is the documented silent value: reissue the token with no visible UI
+        // if possible, and simply fail quietly (via error_callback) if it isn't.
+        tc.requestAccessToken({ prompt: "none" });
       }
     }
 
     function gIn() {
       if (!cfg()) { setSt("Add your Google client ID first."); return; }
+      if (inWebView()) { setSt("Google sign-in isn't supported inside this installed app — open the web version in your phone's browser to back up."); return; }
       if (!gInit()) { setSt("Google sign-in is loading. Check internet connection."); return; }
       tc.requestAccessToken({ prompt: "select_account" });
     }
@@ -1317,7 +1322,7 @@
       if (r.status == 401) {
         tok = null;
         try { localStorage.removeItem("gd_token"); } catch (e) {}
-        if (gInit()) tc.requestAccessToken({ prompt: "" });
+        if (!inWebView() && gInit()) tc.requestAccessToken({ prompt: "none" });
         throw new Error("expired");
       }
       if (!r.ok) throw new Error("Drive " + r.status);
@@ -1326,7 +1331,7 @@
 
     async function sync() {
       if (!tok) {
-        if (ls("gd") && gInit()) tc.requestAccessToken({ prompt: "" });
+        if (!inWebView() && ls("gd") && gInit()) tc.requestAccessToken({ prompt: "none" });
         return;
       }
       setSt("Syncing…");
