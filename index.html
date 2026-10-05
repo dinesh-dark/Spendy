@@ -507,7 +507,7 @@
           </div>
         </div>
       </div>
-      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small>${nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
+      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small>${nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b><button class="link" style="display:block;margin-top:4px" onclick="markPaid(${x.id})">Mark paid</button></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
       <div class="tiles">
         <button class="tile" onclick="go('add')">➕<b>Add purchase</b><small>Log item manually</small></button>
         <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Strict OCR verification</small></button>
