@@ -470,6 +470,17 @@
     window.sync = sync;
     window.shiftBudgetMonth = shiftBudgetMonth;
     window.saveMonthBudget = saveMonthBudget;
+    window.setBMo = setBMo;
+    window.setSel = setSel;
+    window.setRepType = setRepType;
+    window.setRepFrom = setRepFrom;
+    window.setRepTo = setRepTo;
+
+    function setBMo(m) { bMo = m; go("budget"); }
+    function setSel(x) { sel = x; stf = "all"; go("price"); }
+    function setRepType(k) { repType = k; go("rep"); }
+    function setRepFrom(x) { repFrom = x; go("rep"); }
+    function setRepTo(x) { repTo = x; go("rep"); }
 
     function home() {
       const cur = today().slice(0, 7), it = inMo(cur), t = sum(it);
@@ -485,7 +496,7 @@
         <div class="bar ${left < 0 ? "over" : ""}"><i style="width:${p}%"></i></div>
         <div class="two">
           <div>
-            <button class="budget-btn" onclick="bMo='${cur}';go('budget')">
+            <button class="budget-btn" onclick="setBMo('${cur}')">
               <small style="color:#c7d6ff">Monthly budget</small><br>
               <b>${fm(b)} ✎</b>
             </button>
@@ -500,7 +511,7 @@
       <div class="tiles">
         <button class="tile" onclick="go('add')">➕<b>Add purchase</b><small>Log item manually</small></button>
         <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Strict OCR verification</small></button>
-        <button class="tile" onclick="bMo='${cur}';go('budget')">🎯<b>Monthly Budgets</b><small>Set custom limit per month</small></button>
+        <button class="tile" onclick="setBMo('${cur}')">🎯<b>Monthly Budgets</b><small>Set custom limit per month</small></button>
         <button class="tile" onclick="go('rep')">📊<b>View reports</b><small>Insights &amp; trends</small></button>
         <button class="tile" onclick="go('price')">🏷️<b>Price tracker</b><small>Compare stores</small></button>
         <button class="tile" onclick="go('bills')">🔔<b>Bills &amp; EMIs</b><small>Reminders & tracking</small></button>
@@ -561,7 +572,7 @@
         ${configuredMonths.length ? configuredMonths.map(m => `
           <div class="row">
             <div class="g"><b>${new Date(m + "-01T00:00").toLocaleDateString("en-IN", { month: "short", year: "numeric" })}</b><small>Spent: ${fm(sum(inMo(m)))}</small></div>
-            <div class="r"><b>${fm(S.budgets[m])}</b><button class="link" style="font-size:12px;display:block" onclick="bMo='${m}';go('budget')">Edit</button></div>
+            <div class="r"><b>${fm(S.budgets[m])}</b><button class="link" style="font-size:12px;display:block" onclick="setBMo('${m}')">Edit</button></div>
           </div>
         `).join("") : empty("No custom budgets set yet.")}
       </div>
@@ -969,7 +980,7 @@
       const svg = `<svg viewBox="0 0 310 125" width="100%" role="img" aria-label="Price history by store"><text x="30" y="${Y(mx) + 3}" text-anchor="end">${+mx.toFixed(1)}</text><text x="30" y="${Y(mn) + 3}" text-anchor="end">${+mn.toFixed(1)}</text><line x1="34" x2="300" y1="${Y(mx)}" y2="${Y(mx)}" stroke="var(--line)"/><line x1="34" x2="300" y1="${Y(mn)}" y2="${Y(mn)}" stroke="var(--line)"/>${stores.filter(x => shown.includes(x)).map(x => { const c = SC[stores.indexOf(x) % 6], a = pts.filter(i => sn(i) == x); return (a.length > 1 ? `<polyline points="${a.map(i => X(i.date) + "," + Y(i.p)).join(" ")}" fill="none" stroke="${c}" stroke-width="2.5"/>` : "") + a.map(i => `<circle cx="${X(i.date)}" cy="${Y(i.p)}" r="3.5" fill="${c}"><title>${esc(x)} · ${df(i.date)} · ${fm(i.p)}/${u}</title></circle>`).join(""); }).join("")}<text x="36" y="118">${df(pts[0].date)}</text><text x="300" y="118" text-anchor="end">${df(last.date)}</text></svg>`;
       const st = stores.map(x => { const a = it.filter(i => sn(i) == x); return { s: x, l: a[a.length - 1].p, avg: a.reduce((q, i) => q + i.p, 0) / a.length, lo: Math.min(...a.map(i => i.p)), n: a.length }; }).sort((a, b) => a.l - b.l);
 
-      return `<h1>Price tracker</h1><select onchange="sel=this.value;stf='all';go('price')" aria-label="Product">${names.map(n => `<option ${n == sel ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      return `<h1>Price tracker</h1><select onchange="setSel(this.value)" aria-label="Product">${names.map(n => `<option ${n == sel ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0"><button class="pill ${stf == "all" ? "on" : ""}" onclick="pf(-1)">All stores</button>${stores.map((x, k) => `<button class="pill ${stf == x ? "on" : ""}" onclick="pf(${k})">${esc(x)}</button>`).join("")}</div>
       <div class="card"><div class="head"><span style="font-size:30px">${emo(sel)}</span>${ch === null ? "" : `<span class="${ch > 0 ? "up" : "dn"}">${ch > 0 ? "▲ +" : "▼ "}${ch.toFixed(1)}% vs previous buy</span>`}</div>
       <div class="two"><div><small>Latest</small><br><b>${fm(last.p)}/${u}</b></div><div><small>Lowest</small><br><b>${fm(mn)}</b></div><div><small>Average</small><br><b>${fm(avg)}</b></div><div style="text-align:right"><small>Highest</small><br><b>${fm(mx)}</b></div></div></div>
@@ -1066,8 +1077,8 @@
       const prev = prevRange(repType, cur, repAnchor);
       const curIt = inRange(cur), prevIt = inRange(prev), t = sum(curIt), pt = sum(prevIt);
       const diff = pt ? ((t - pt) / pt) * 100 : (t ? 100 : 0);
-      const chips = `<div class="chips" style="grid-template-columns:repeat(5,1fr)">${[["day", "Day"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["custom", "Custom"]].map(([k, l]) => `<button class="chip ${repType == k ? "on" : ""}" onclick="repType='${k}';go('rep')">${l}</button>`).join("")}</div>`;
-      const nav = repType == "custom" ? `<div class="f" style="margin-bottom:12px"><div><label style="margin-top:0">From</label><input type="date" value="${cur[0]}" onchange="repFrom=this.value;go('rep')"></div><div><label style="margin-top:0">To</label><input type="date" value="${cur[1]}" onchange="repTo=this.value;go('rep')"></div></div>` : `<div class="mnav"><button onclick="shiftRep(-1)">‹</button><span>${rangeLabel(repType, cur, repAnchor)}</span><button onclick="shiftRep(1)">›</button></div>`;
+      const chips = `<div class="chips" style="grid-template-columns:repeat(5,1fr)">${[["day", "Day"], ["week", "Week"], ["month", "Month"], ["year", "Year"], ["custom", "Custom"]].map(([k, l]) => `<button class="chip ${repType == k ? "on" : ""}" onclick="setRepType('${k}')">${l}</button>`).join("")}</div>`;
+      const nav = repType == "custom" ? `<div class="f" style="margin-bottom:12px"><div><label style="margin-top:0">From</label><input type="date" value="${cur[0]}" onchange="setRepFrom(this.value)"></div><div><label style="margin-top:0">To</label><input type="date" value="${cur[1]}" onchange="setRepTo(this.value)"></div></div>` : `<div class="mnav"><button onclick="shiftRep(-1)">‹</button><span>${rangeLabel(repType, cur, repAnchor)}</span><button onclick="shiftRep(1)">›</button></div>`;
 
       if (!curIt.length) return `<h1>Reports</h1>${chips}${nav}${empty("No purchases logged in this period.")}`;
 
