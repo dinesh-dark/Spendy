@@ -186,6 +186,25 @@
     }
     .f { display: flex; gap: 8px; }
     .f > * { flex: 1; }
+    .combo { position: relative; }
+    .combo-list {
+      position: absolute;
+      left: 0; right: 0; top: calc(100% + 4px);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      max-height: 240px;
+      overflow-y: auto;
+      z-index: 20;
+      box-shadow: 0 8px 24px #0002;
+    }
+    .combo-item {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      cursor: pointer;
+    }
+    .combo-item:last-child { border: 0; }
+    .combo-item:active { background: color-mix(in srgb, var(--blue) 10%, var(--card)); }
     .total {
       background: color-mix(in srgb, var(--blue) 10%, var(--card));
       border-radius: 12px;
@@ -475,6 +494,9 @@
     window.setRepType = setRepType;
     window.setRepFrom = setRepFrom;
     window.setRepTo = setRepTo;
+    window.filterSel = filterSel;
+    window.pickSel = pickSel;
+    window.hideSelList = hideSelList;
 
     function setBMo(m) { bMo = m; go("budget"); }
     function setSel(x) { sel = x; stf = "all"; go("price"); }
@@ -962,12 +984,44 @@
     const sn = i => i.store || "Unknown store";
     function pf(k) { stf = k < 0 ? "all" : curSt[k]; go("price"); }
 
-    function price() {
+    function priceNames() {
       const lc = s => String(s).trim().toLowerCase();
       const nmap = new Map();
       S.items.forEach(i => { if (!nmap.has(lc(i.name))) nmap.set(lc(i.name), i.name); });
-      const names = [...nmap.values()].sort();
+      return [...nmap.values()].sort();
+    }
+
+    let selMatches = [];
+    function filterSel(q) {
+      const box = $("#selList");
+      if (!box) return;
+      const query = q.trim().toLowerCase();
+      selMatches = priceNames().filter(n => n.toLowerCase().includes(query));
+      box.innerHTML = selMatches.length ? selMatches.map((n, i) => `<div class="combo-item" onmousedown="event.preventDefault();pickSel(${i})">${esc(n)}${n == sel ? " ✓" : ""}</div>`).join("") : `<div class="combo-item" style="color:var(--mute)">No matching product</div>`;
+      box.style.display = "block";
+    }
+
+    function pickSel(i) {
+      const n = selMatches[i];
+      const box = $("#selList");
+      if (box) box.style.display = "none";
+      if (n != null) setSel(n);
+    }
+
+    function hideSelList() {
+      setTimeout(() => {
+        const box = $("#selList"); if (box) box.style.display = "none";
+        // If the user typed a search but tapped away without picking a result,
+        // snap the box back to showing the actual selected product rather than
+        // leaving unmatched typed text sitting there.
+        const inp = $("#selSearch"); if (inp) inp.value = sel;
+      }, 150);
+    }
+
+    function price() {
+      const names = priceNames();
       if (!names.length) return `<h1>Price tracker</h1>${empty("Add purchases to compare price trends across stores.")}`;
+      const lc = s => String(s).trim().toLowerCase();
       if (!names.includes(sel)) sel = names[0];
       const raw = S.items.filter(i => lc(i.name) == lc(sel)).sort((a, b) => a.date.localeCompare(b.date) || a.id - b.id), u = nz(raw[raw.length - 1]).u;
       const it = raw.map(i => ({ ...i, ...nz(i) })).filter(i => i.u == u), stores = [...new Set(it.map(sn))];
@@ -980,7 +1034,7 @@
       const svg = `<svg viewBox="0 0 310 125" width="100%" role="img" aria-label="Price history by store"><text x="30" y="${Y(mx) + 3}" text-anchor="end">${+mx.toFixed(1)}</text><text x="30" y="${Y(mn) + 3}" text-anchor="end">${+mn.toFixed(1)}</text><line x1="34" x2="300" y1="${Y(mx)}" y2="${Y(mx)}" stroke="var(--line)"/><line x1="34" x2="300" y1="${Y(mn)}" y2="${Y(mn)}" stroke="var(--line)"/>${stores.filter(x => shown.includes(x)).map(x => { const c = SC[stores.indexOf(x) % 6], a = pts.filter(i => sn(i) == x); return (a.length > 1 ? `<polyline points="${a.map(i => X(i.date) + "," + Y(i.p)).join(" ")}" fill="none" stroke="${c}" stroke-width="2.5"/>` : "") + a.map(i => `<circle cx="${X(i.date)}" cy="${Y(i.p)}" r="3.5" fill="${c}"><title>${esc(x)} · ${df(i.date)} · ${fm(i.p)}/${u}</title></circle>`).join(""); }).join("")}<text x="36" y="118">${df(pts[0].date)}</text><text x="300" y="118" text-anchor="end">${df(last.date)}</text></svg>`;
       const st = stores.map(x => { const a = it.filter(i => sn(i) == x); return { s: x, l: a[a.length - 1].p, avg: a.reduce((q, i) => q + i.p, 0) / a.length, lo: Math.min(...a.map(i => i.p)), n: a.length }; }).sort((a, b) => a.l - b.l);
 
-      return `<h1>Price tracker</h1><select onchange="setSel(this.value)" aria-label="Product">${names.map(n => `<option ${n == sel ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      return `<h1>Price tracker</h1><div class="combo"><input id="selSearch" type="text" autocomplete="off" inputmode="search" aria-label="Search product" placeholder="Search product…" value="${esc(sel)}" oninput="filterSel(this.value)" onfocus="this.select();filterSel('')" onblur="hideSelList()"><div id="selList" class="combo-list" style="display:none"></div></div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0"><button class="pill ${stf == "all" ? "on" : ""}" onclick="pf(-1)">All stores</button>${stores.map((x, k) => `<button class="pill ${stf == x ? "on" : ""}" onclick="pf(${k})">${esc(x)}</button>`).join("")}</div>
       <div class="card"><div class="head"><span style="font-size:30px">${emo(sel)}</span>${ch === null ? "" : `<span class="${ch > 0 ? "up" : "dn"}">${ch > 0 ? "▲ +" : "▼ "}${ch.toFixed(1)}% vs previous buy</span>`}</div>
       <div class="two"><div><small>Latest</small><br><b>${fm(last.p)}/${u}</b></div><div><small>Lowest</small><br><b>${fm(mn)}</b></div><div><small>Average</small><br><b>${fm(avg)}</b></div><div style="text-align:right"><small>Highest</small><br><b>${fm(mx)}</b></div></div></div>
