@@ -508,7 +508,7 @@
       const cur = today().slice(0, 7), it = inMo(cur), t = sum(it);
       const b = getBudgetForMonth(cur);
       const left = b - t, p = Math.min(100, b > 0 ? (t / b) * 100 : 0);
-      const due = S.bills.filter(x => !paidToday(x) && nextDue(x) <= addDays(today(), 2));
+      const due = S.bills.filter(x => !periodPaid(x) && nextDue(x) <= addDays(today(), 2));
       const greeting = S.userName ? `Welcome back, ${esc(S.userName)}` : "Welcome back";
 
       return `<small>${greeting}</small><h1>Your spending</h1>
@@ -529,7 +529,7 @@
           </div>
         </div>
       </div>
-      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small>${nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b><button class="link" style="display:block;margin-top:4px" onclick="markPaid(${x.id})">Mark paid</button></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
+      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small${nextDue(x) < today() ? ' class="up"' : ""}>${nextDue(x) < today() ? "Overdue since " + df(nextDue(x)) : nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b><button class="link" style="display:block;margin-top:4px" onclick="markPaid(${x.id})">Mark paid</button></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
       <div class="tiles">
         <button class="tile" onclick="go('add')">➕<b>Add purchase</b><small>Log item manually</small></button>
         <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Strict OCR verification</small></button>
@@ -1182,36 +1182,45 @@
       return S.items.some(i => i.date == today() && i.name == b.name && i.cat == b.category);
     }
 
+    // Has this bill already been paid for the CURRENT period (today's day/week/
+    // month/year), regardless of which day within that period the payment landed on?
+    function periodPaid(b) {
+      if (b.freq == "daily") return paidToday(b);
+      const type = b.freq == "weekly" ? "week" : b.freq == "yearly" ? "year" : "month";
+      const [s, e] = periodRange(type, today());
+      return S.items.some(i => i.name == b.name && i.cat == b.category && i.date >= s && i.date <= e);
+    }
+
     function nextDue(b) {
       const t = today();
       if (b.freq == "daily") return t;
+      const paid = periodPaid(b);
       if (b.freq == "weekly") {
         const d = new Date(t + "T00:00");
-        const diff = ((b.day - d.getDay()) + 7) % 7;
-        d.setDate(d.getDate() + diff);
-        return ymd(d);
+        const back = (d.getDay() - b.day + 7) % 7;
+        const cur = new Date(d);
+        cur.setDate(d.getDate() - back);
+        if (!paid) return ymd(cur);
+        const nxt = new Date(cur);
+        nxt.setDate(cur.getDate() + 7);
+        return ymd(nxt);
       }
       if (b.freq == "yearly") {
-        let y = new Date(t + "T00:00").getFullYear();
-        let dim = new Date(y, b.month, 0).getDate();
-        let ds = y + "-" + String(b.month).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
-        if (ds < t) {
-          y++;
-          dim = new Date(y, b.month, 0).getDate();
-          ds = y + "-" + String(b.month).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
-        }
-        return ds;
+        const y = new Date(t + "T00:00").getFullYear();
+        const dim = new Date(y, b.month, 0).getDate();
+        const curDue = y + "-" + String(b.month).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
+        if (!paid) return curDue;
+        const y2 = y + 1, dim2 = new Date(y2, b.month, 0).getDate();
+        return y2 + "-" + String(b.month).padStart(2, "0") + "-" + String(Math.min(b.day, dim2)).padStart(2, "0");
       }
-      let y = new Date(t + "T00:00").getFullYear(), m = new Date(t + "T00:00").getMonth() + 1;
-      let dim = new Date(y, m, 0).getDate();
-      let ds = y + "-" + String(m).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
-      if (ds < t) {
-        m++;
-        if (m > 12) { m = 1; y++; }
-        dim = new Date(y, m, 0).getDate();
-        ds = y + "-" + String(m).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
-      }
-      return ds;
+      const dNow = new Date(t + "T00:00"), y = dNow.getFullYear(), m = dNow.getMonth() + 1;
+      const dim = new Date(y, m, 0).getDate();
+      const curDue = y + "-" + String(m).padStart(2, "0") + "-" + String(Math.min(b.day, dim)).padStart(2, "0");
+      if (!paid) return curDue;
+      let m2 = m + 1, y2 = y;
+      if (m2 > 12) { m2 = 1; y2++; }
+      const dim2 = new Date(y2, m2, 0).getDate();
+      return y2 + "-" + String(m2).padStart(2, "0") + "-" + String(Math.min(b.day, dim2)).padStart(2, "0");
     }
 
     function freqTxt(b) {
@@ -1282,7 +1291,7 @@
       <div id="bfx">${bfHtml("monthly")}</div>
       <label>Notes (optional)</label><input id="bnt" maxlength="60">
       <div class="err" id="berr"></div><button class="btn" onclick="addBill()">Save bill</button></div>
-      <div class="card"><b>Your recurring bills</b>${list.length ? list.map(b => `<div class="row"><span class="em">${BE[b.category] || "🧾"}</span><div class="g"><b>${esc(b.name)}</b><small>${esc(b.category)} · ${freqTxt(b)}</small><small>${b.nd == today() ? (paidToday(b) ? "Paid today" : "Due today") : (b.nd < addDays(today(), 3) ? "Due " + df(b.nd) : "Next " + df(b.nd))}</small></div><div class="r"><b>${fm(b.amount)}</b>${!paidToday(b) ? `<button class="link" style="display:block;margin-top:4px" onclick="markPaid(${b.id})">Mark paid</button>` : ""}</div><button class="del" aria-label="Delete" onclick="delBill(${b.id})">✕</button></div>`).join("") : empty("No recurring bills added.")}</div>`;
+      <div class="card"><b>Your recurring bills</b>${list.length ? list.map(b => { const paid = periodPaid(b), overdue = !paid && b.nd < today(); return `<div class="row"><span class="em">${BE[b.category] || "🧾"}</span><div class="g"><b>${esc(b.name)}</b><small>${esc(b.category)} · ${freqTxt(b)}</small><small${overdue ? ' class="up"' : ""}>${paid ? "Next " + df(b.nd) : overdue ? "Overdue since " + df(b.nd) : b.nd == today() ? "Due today" : "Due " + df(b.nd)}</small></div><div class="r"><b>${fm(b.amount)}</b>${!paid ? `<button class="link" style="display:block;margin-top:4px" onclick="markPaid(${b.id})">Mark paid</button>` : ""}</div><button class="del" aria-label="Delete" onclick="delBill(${b.id})">✕</button></div>`; }).join("") : empty("No recurring bills added.")}</div>`;
     }
 
     function askNotif() {
@@ -1295,7 +1304,7 @@
       let last = null;
       try { last = localStorage.getItem("notif-date"); } catch (e) {}
       if (last == today()) return;
-      const due = S.bills.filter(b => !paidToday(b) && nextDue(b) <= addDays(today(), 1));
+      const due = S.bills.filter(b => !periodPaid(b) && nextDue(b) <= addDays(today(), 1));
       if (due.length) {
         try { new Notification("Bills due", { body: due.map(b => b.name + " – " + fm(b.amount)).join(", ").slice(0, 180) }); } catch (e) {}
       }
