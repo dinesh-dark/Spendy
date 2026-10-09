@@ -418,6 +418,8 @@
     S.prods = S.prods || [];
     S.bills = S.bills || [];
     S.budgets = S.budgets || {};
+    S.cards = S.cards || [];
+    S.cardBills = S.cardBills || [];
     if (typeof S.budget === "number" && Object.keys(S.budgets).length === 0) {
       const curMo = new Date().toISOString().slice(0, 7);
       S.budgets[curMo] = S.budget;
@@ -461,6 +463,15 @@
       go('bill');
     }
 
+    // The bill-scan verification screen's fields are edited via these instead of
+    // inline "B.x = ..." attribute handlers: B lives in the module's scope, which
+    // an inline onclick/onchange/oninput attribute can't see (it runs in plain
+    // global scope), so a direct assignment there would silently throw and never
+    // actually update the staged bill.
+    function setBField(f, v) { if (B) B[f] = v; }
+    function delBillItem(k) { if (B) { B.items.splice(k, 1); go("bill"); } }
+    function addBillItem() { if (B) { B.items.push({ name: "", qty: 1, unit: "pcs", amount: NaN, category: "Grocery", cat: "Grocery", on: true }); go("bill"); } }
+
     window.go = go;
     window.shift = shift;
     window.editItem = editItem;
@@ -496,6 +507,16 @@
     window.setRepTo = setRepTo;
     window.filterSel = filterSel;
     window.pickSel = pickSel;
+    window.pmC = pmC;
+    window.epmC = epmC;
+    window.bPmC = bPmC;
+    window.setBField = setBField;
+    window.delBillItem = delBillItem;
+    window.addBillItem = addBillItem;
+    window.addCard = addCard;
+    window.delCard = delCard;
+    window.saveCardBill = saveCardBill;
+    window.delCardBill = delCardBill;
     window.hideSelList = hideSelList;
 
     function setBMo(m) { bMo = m; go("budget"); }
@@ -537,6 +558,7 @@
         <button class="tile" onclick="go('rep')">📊<b>View reports</b><small>Insights &amp; trends</small></button>
         <button class="tile" onclick="go('price')">🏷️<b>Price tracker</b><small>Compare stores</small></button>
         <button class="tile" onclick="go('bills')">🔔<b>Bills &amp; EMIs</b><small>Reminders & tracking</small></button>
+        <button class="tile" onclick="go('cards')">💳<b>Credit Cards</b><small>Track &amp; reconcile bills</small></button>
         <button class="tile" onclick="go('prod')">🛒<b>My products</b><small>Custom item list</small></button>
         <button class="tile" onclick="go('settings')">⚙️<b>AI &amp; Settings</b><small>Name &amp; Gemini Key</small></button>
       </div>
@@ -610,7 +632,7 @@
           <span class="em">${emo(i.name)}</span>
           <div class="g">
             <b>${esc(i.name)}</b>
-            <small>${i.qty} ${i.unit} · ${fm(i.price)}/${i.unit} · ${df(i.date)}${i.store ? " · " + esc(i.store) : ""}${i.pay ? " · " + esc(i.pay) : ""}</small>
+            <small>${i.qty} ${i.unit} · ${fm(i.price)}/${i.unit} · ${df(i.date)}${i.store ? " · " + esc(i.store) : ""}${i.pay ? " · " + esc(i.pay) + (i.pay == "Credit Card" && i.cardId ? cardLabel(i.cardId) : "") : ""}</small>
             ${i.notes ? `<br><small>${esc(i.notes)}</small>` : ""}
           </div>
           <div class="r">
@@ -656,7 +678,8 @@
         <label>Date</label>
         <input id="edt" type="date" value="${item.date}">
         <label>Payment mode</label>
-        <select id="epm">${opts(["Cash", "UPI", "Card"], item.pay || "Cash")}</select>
+        <select id="epm" onchange="epmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], item.pay || "Cash")}</select>
+        <div id="epmx">${item.pay == "Credit Card" ? cardPickerHtml(item.cardId || (S.cards[0] && S.cards[0].id), "epmcard") : ""}</div>
         <label>Notes</label>
         <input id="ent" maxlength="80" value="${esc(item.notes || "")}">
         <div class="total"><span>Total amount</span><span id="ett">${fm(item.total)}</span></div>
@@ -687,7 +710,9 @@
       item.price = price;
       item.total = qty * price;
       item.date = date;
-      item.pay = $("#epm").value;
+      const epm = $("#epm").value, ecc = $("#epmcard");
+      item.pay = epm;
+      item.cardId = epm == "Credit Card" && ecc ? ecc.value : "";
       item.notes = $("#ent").value.trim();
       save();
       mo = date.slice(0, 7);
@@ -708,7 +733,8 @@
         <div class="f"><input id="q" type="number" inputmode="decimal" value="1" min="0" step="any" oninput="tot()"><select id="u">${opts(UN, "kg")}</select></div>
         <label>Price per unit (₹)</label><input id="pr" type="number" inputmode="decimal" min="0" step="any" oninput="tot()" placeholder="e.g. 40">
         <label>Date</label><input id="dt" type="date" value="${today()}">
-        <label>Payment mode</label><select id="pm">${opts(["Cash", "UPI", "Card"], "Cash")}</select>
+        <label>Payment mode</label><select id="pm" onchange="pmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], "Cash")}</select>
+        <div id="pmx"></div>
         <label>Notes (optional)</label><input id="nt" maxlength="80" placeholder="e.g. Provisions">
         <div class="total"><span>Total amount</span><span id="tt">₹0</span></div>
         <div class="err" id="err"></div>
@@ -734,6 +760,7 @@
         $("#err").textContent = "Enter a product, a quantity > 0, price, and date.";
         return;
       }
+      const pm = g("pm"), cc = $("#pmcard");
       S.items.push({
         id: Date.now(),
         name: stdName(name),
@@ -743,7 +770,8 @@
         price,
         total: qty * price,
         date: g("dt"),
-        pay: g("pm"),
+        pay: pm,
+        cardId: pm == "Credit Card" && cc ? cc.value : "",
         store: g("sto").trim(),
         notes: g("nt").trim()
       });
@@ -861,11 +889,12 @@
         ${kpList()}
         ${B.img ? `<img class="thumb" src="${B.img}" alt="Receipt">` : ""}
         <label>Store Name</label>
-        <input maxlength="40" value="${esc(B.store || "")}" placeholder="Store name" oninput="B.store=this.value">
+        <input maxlength="40" value="${esc(B.store || "")}" placeholder="Store name" oninput="setBField('store', this.value)">
         <div class="f">
-          <div><label>Date</label><input type="date" value="${B.date}" oninput="B.date=this.value"></div>
-          <div><label>Payment</label><select onchange="B.payment=this.value">${opts(["Cash", "UPI", "Card"], B.payment)}</select></div>
+          <div><label>Date</label><input type="date" value="${B.date}" oninput="setBField('date', this.value)"></div>
+          <div><label>Payment</label><select onchange="setBField('payment', this.value);bPmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], B.payment)}</select></div>
         </div>
+        <div id="bpmx">${B.payment == "Credit Card" ? cardPickerHtml(B.cardId || (S.cards[0] && S.cards[0].id), "", "setBField('cardId', this.value)") : ""}</div>
         <details style="margin-top:8px">
           <summary style="font-size:12px;color:var(--mute);cursor:pointer">View Structured JSON</summary>
           <div class="json-box">${esc(B.rawJson || "")}</div>
@@ -880,7 +909,7 @@
               <input type="checkbox" style="width:auto;flex:none" ${i.on ? "checked" : ""} aria-label="Include" onchange="bs(${k},'on',this.checked);$('#bi${k}').classList.toggle('off',!this.checked)">
               <span class="em" style="flex:none">${emo(i.name)}</span>
               <input maxlength="40" list="kp" value="${esc(i.name)}" placeholder="Item name" aria-label="Product" oninput="bs(${k},'name',this.value)">
-              <button class="del" style="flex:none" aria-label="Remove" onclick="B.items.splice(${k},1);go('bill')">✕</button>
+              <button class="del" style="flex:none" aria-label="Remove" onclick="delBillItem(${k})">✕</button>
             </div>
             <div class="f">
               <input type="number" inputmode="decimal" min="0" step="any" value="${i.qty}" placeholder="Qty/Weight" aria-label="Quantity" oninput="bs(${k},'qty',+this.value)">
@@ -893,12 +922,12 @@
             </div>
           </div>
         `).join("") || empty("No items detected. Add one manually below.")}
-        <button class="link" style="margin-top:10px" onclick="B.items.push({name:'',qty:1,unit:'pcs',amount:NaN,category:'Grocery',cat:'Grocery',on:true});go('bill')">+ Add missing line item</button>
+        <button class="link" style="margin-top:10px" onclick="addBillItem()">+ Add missing line item</button>
       </div>
 
       <div class="card">
         <label style="margin-top:0">Total printed on receipt (₹)</label>
-        <input type="number" inputmode="decimal" min="0" step="any" value="${B.total || ""}" placeholder="Printed grand total" oninput="B.total=+this.value||0;bt()">
+        <input type="number" inputmode="decimal" min="0" step="any" value="${B.total || ""}" placeholder="Printed grand total" oninput="setBField('total', +this.value||0);bt()">
         <div class="total"><span>Sum of selected items</span><span id="bsum">₹0.00</span></div>
         <div id="bchk"></div>
         <div class="err" id="berr"></div>
@@ -967,6 +996,7 @@
           total: +i.amount,
           date: B.date,
           pay: B.payment || "Cash",
+          cardId: B.payment == "Credit Card" ? (B.cardId || "") : "",
           store: (B.store || "").trim(),
           notes: "Scanned from bill"
         });
@@ -1066,6 +1096,119 @@
       S.prods.splice(k, 1);
       save();
       go("prod");
+    }
+
+    // --- Credit cards: payment-mode card picker (shared by Add/Edit/Scan bill) ---
+    function cardOpts(selId) {
+      return S.cards.map(c => `<option value="${c.id}" ${String(selId) == String(c.id) ? "selected" : ""}>${esc(c.name)}${c.last4 ? " •" + esc(c.last4) : ""}</option>`).join("");
+    }
+
+    // " (Card Name)" for history rows, or "" if the card was since deleted.
+    function cardLabel(cardId) {
+      const c = S.cards.find(c => c.id == cardId);
+      return c ? " (" + esc(c.name) + ")" : "";
+    }
+
+    function cardPickerHtml(cardId, selectId, onchangeExpr) {
+      return S.cards.length
+        ? `<label>Which card?</label><select ${selectId ? `id="${selectId}"` : ""} onchange="${onchangeExpr || ""}">${cardOpts(cardId)}</select>`
+        : `<small style="display:block;margin:4px 0" class="up">No cards added yet - <button type="button" class="link" style="display:inline;padding:0" onclick="go('cards')">add one</button> under Manage Credit Cards, or this will save without a specific card.</small>`;
+    }
+
+    function pmC() {
+      const box = $("#pmx");
+      if (!box) return;
+      box.innerHTML = $("#pm").value == "Credit Card" ? cardPickerHtml(S.cards[0] && S.cards[0].id, "pmcard") : "";
+    }
+
+    function epmC() {
+      const box = $("#epmx");
+      if (!box) return;
+      const item = S.items.find(i => i.id == editId);
+      box.innerHTML = $("#epm").value == "Credit Card" ? cardPickerHtml((item && item.cardId) || (S.cards[0] && S.cards[0].id), "epmcard") : "";
+    }
+
+    function bPmC() {
+      const box = $("#bpmx");
+      if (!box) return;
+      if (B.payment == "Credit Card") {
+        if (!B.cardId && S.cards[0]) B.cardId = S.cards[0].id;
+        box.innerHTML = cardPickerHtml(B.cardId, "", "setBField('cardId', this.value)");
+      } else {
+        B.cardId = "";
+        box.innerHTML = "";
+      }
+    }
+
+    // --- Manage Credit Cards screen ---
+    const cardSpendInMonth = (cardId, m) => S.items.filter(i => i.cardId == cardId && i.date.startsWith(m)).reduce((s, i) => s + i.total, 0);
+
+    function addCard() {
+      const n = $("#cnm").value.trim(), l4 = $("#cl4").value.trim();
+      if (!n) { $("#cerr").textContent = "Enter a card name."; return; }
+      if (l4 && !/^\d{4}$/.test(l4)) { $("#cerr").textContent = "Last 4 digits should be exactly 4 numbers."; return; }
+      S.cards.push({ id: Date.now(), name: n, last4: l4 });
+      save();
+      go("cards");
+    }
+
+    function delCard(id) {
+      if (!confirm("Delete this card? Past purchases logged against it keep their record but will no longer count toward any card's monthly tally.")) return;
+      S.cards = S.cards.filter(c => c.id != id);
+      S.cardBills = S.cardBills.filter(cb => cb.cardId != id);
+      save();
+      go("cards");
+    }
+
+    function saveCardBill(cardId) {
+      const el = $("#cb" + cardId);
+      const amt = +el.value;
+      if (!(amt >= 0)) { el.focus(); return; }
+      const m = today().slice(0, 7);
+      const existing = S.cardBills.find(cb => cb.cardId == cardId && cb.month == m);
+      if (existing) { existing.amount = amt; existing.date = today(); }
+      else S.cardBills.push({ id: Date.now(), cardId, month: m, amount: amt, date: today() });
+      save();
+      go("cards");
+    }
+
+    function delCardBill(id) {
+      S.cardBills = S.cardBills.filter(cb => cb.id != id);
+      save();
+      go("cards");
+    }
+
+    function cards() {
+      const m = today().slice(0, 7);
+      return `<h1>Manage Credit Cards</h1>
+      <div class="card">
+        <label style="margin-top:0">Card name</label><input id="cnm" maxlength="30" placeholder="e.g. HDFC Regalia">
+        <label>Last 4 digits (optional)</label><input id="cl4" maxlength="4" inputmode="numeric" placeholder="e.g. 4521">
+        <div class="err" id="cerr"></div>
+        <button class="btn" onclick="addCard()">Add card</button>
+      </div>
+      ${S.cards.length ? S.cards.map(c => {
+        const spend = cardSpendInMonth(c.id, m);
+        const bill = S.cardBills.find(cb => cb.cardId == c.id && cb.month == m);
+        const diff = bill ? +(bill.amount - spend).toFixed(2) : null;
+        const hist = S.cardBills.filter(cb => cb.cardId == c.id && cb.month != m).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 6);
+        return `<div class="card">
+          <div class="head"><b>💳 ${esc(c.name)}</b><button class="del" aria-label="Delete card" onclick="delCard(${c.id})">✕</button></div>
+          ${c.last4 ? `<small style="display:block;margin-top:-6px;margin-bottom:8px">•••• ${esc(c.last4)}</small>` : ""}
+          <div class="two">
+            <div><small>Tracked spend this month</small><br><b>${fm(spend)}</b></div>
+            <div style="text-align:right"><small>${bill ? "Statement amount" : "Statement not entered"}</small><br><b>${bill ? fm(bill.amount) : "—"}</b></div>
+          </div>
+          ${bill ? `<div class="row"><div class="g"><b>${diff > 0 ? "Interest & charges" : diff < 0 ? "Not yet billed / credit" : "Matches exactly"}</b><small>Statement − tracked spend</small></div><div class="r"><b class="${diff > 0 ? "up" : diff < 0 ? "dn" : ""}">${diff == 0 ? "₹0" : diff > 0 ? "+" + fm(diff) : "-" + fm(Math.abs(diff))}</b></div></div>` : ""}
+          <label style="margin-top:10px">${bill ? "Update" : "Enter"} this month's statement amount (₹)</label>
+          <div class="f"><input id="cb${c.id}" type="number" inputmode="decimal" min="0" step="any" value="${bill ? bill.amount : ""}" placeholder="e.g. 18500"><button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="saveCardBill(${c.id})">Save</button></div>
+          ${hist.length ? `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--mute);cursor:pointer">Past months</summary>${hist.map(cb => {
+            const hSpend = cardSpendInMonth(c.id, cb.month), hDiff = +(cb.amount - hSpend).toFixed(2);
+            return `<div class="row"><div class="g">${cb.month}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="delCardBill(${cb.id})">✕</button></div>`;
+          }).join("")}</details>` : ""}
+        </div>`;
+      }).join("") : empty("No cards added yet. Add your first card above.")}
+      <button class="link" style="display:block;margin:12px auto 0" onclick="go('home')">Back to Home</button>`;
     }
 
     function periodRange(type, anchor) {
@@ -1335,6 +1478,8 @@
         items: [...m.values()].filter(i => !del.has(i.id)),
         prods: [...pm.values()].filter(p => !pd.has(p.name.toLowerCase())),
         bills: newer ? (a.bills || b.bills || []) : (b.bills || a.bills || []),
+        cards: newer ? (a.cards || b.cards || []) : (b.cards || a.cards || []),
+        cardBills: newer ? (a.cardBills || b.cardBills || []) : (b.cardBills || a.cardBills || []),
         geminiKey: a.geminiKey || b.geminiKey || "",
         userName: a.userName || b.userName || "",
         del: [...del],
@@ -1439,6 +1584,8 @@
           S.prods = S.prods || [];
           S.bills = S.bills || [];
           S.budgets = S.budgets || {};
+          S.cards = S.cards || [];
+          S.cardBills = S.cardBills || [];
           raw();
         }
         const body = JSON.stringify(S);
@@ -1463,7 +1610,7 @@
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
     });
 
-    const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget };
+    const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget, cards };
     const N = [
       ["home", "🏠", "Home"],
       ["hist", "🧾", "History"],
