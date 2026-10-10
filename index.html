@@ -1678,9 +1678,27 @@
       render(x);
     }
 
-    addEventListener("popstate", e => render((e.state && e.state.page) || "home"));
+    // A lone history entry for Home isn't enough to ask before exiting: popstate
+    // only fires for same-document navigation, so the back press that would leave
+    // Home entirely (nothing left in this page's history) exits straight away
+    // without ever giving JS a chance to intervene. The fix is to always keep one
+    // extra "floor" entry underneath Home - so that exit-from-home back press lands
+    // on the floor instead (a same-document popstate we CAN catch), where a confirm
+    // is shown; declining re-arms the floor by pushing Home again, and confirming
+    // lets the following history.back() actually leave (closing the app/tab, or
+    // returning to whatever was open before it, same as a normal exit).
+    addEventListener("popstate", e => {
+      const state = e.state;
+      if (state && state.floor) {
+        if (confirm("Exit Spend Tracker?")) history.back();
+        else { history.pushState({ page: "home" }, "", ""); render("home"); }
+        return;
+      }
+      render((state && state.page) || "home");
+    });
 
-    history.replaceState({ page: "home" }, "", "");
+    history.replaceState({ page: "home", floor: true }, "", "");
+    history.pushState({ page: "home" }, "", "");
     render("home");
     checkReminders();
     document.addEventListener("visibilitychange", () => {
