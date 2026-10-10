@@ -1656,7 +1656,10 @@
       ["rep", "📊", "Reports"]
     ];
 
-    function go(x) {
+    // Renders a screen without touching browser/back-button history - used by go()
+    // itself and by the popstate handler below (which fires *because* history already
+    // moved, so re-pushing here would break the back stack instead of following it).
+    function render(x) {
       v = x;
       $("#app").innerHTML = V[x]();
       $("#nav").innerHTML = N.map(n => n[1] ? `<button class="${n[0] == v ? "on" : ""}" onclick="go('${n[0]}')"><span>${n[1]}</span>${n[2]}</button>` : `<button class="plus" aria-label="Add purchase" onclick="go('add')">+</button>`).join("");
@@ -1664,7 +1667,21 @@
       if (x === "bill") bt();
     }
 
-    go("home");
+    function go(x) {
+      // Every screen change gets its own browser-history entry, so the phone's back
+      // button (or a browser's back arrow) steps back through the app's screens
+      // instead of immediately exiting - this matters even more once the app is
+      // installed/packaged, where a back gesture is the main way to leave a screen.
+      // Calls that just re-render the SAME screen after a data change (most go(v)
+      // calls throughout this file) don't push a redundant history entry.
+      if (!history.state || history.state.page !== x) history.pushState({ page: x }, "", "");
+      render(x);
+    }
+
+    addEventListener("popstate", e => render((e.state && e.state.page) || "home"));
+
+    history.replaceState({ page: "home" }, "", "");
+    render("home");
     checkReminders();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState == "visible") {
