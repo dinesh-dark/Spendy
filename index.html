@@ -418,8 +418,7 @@
     S.prods = S.prods || [];
     S.bills = S.bills || [];
     S.budgets = S.budgets || {};
-    S.cards = S.cards || [];
-    S.cardBills = S.cardBills || [];
+    defaultCardFields();
     if (typeof S.budget === "number" && Object.keys(S.budgets).length === 0) {
       const curMo = new Date().toISOString().slice(0, 7);
       S.budgets[curMo] = S.budget;
@@ -516,6 +515,7 @@
     window.addCard = addCard;
     window.delCard = delCard;
     window.saveCardBill = saveCardBill;
+    window.setCardCycle = setCardCycle;
     window.delCardBill = delCardBill;
     window.hideSelList = hideSelList;
 
@@ -1141,33 +1141,64 @@
     }
 
     // --- Manage Credit Cards screen ---
-    const cardSpendInMonth = (cardId, m) => S.items.filter(i => i.cardId == cardId && i.date.startsWith(m)).reduce((s, i) => s + i.total, 0);
+    function defaultCardFields() {
+      S.cards = S.cards || [];
+      S.cards.forEach(c => { if (!c.cycleDay) c.cycleDay = 1; });
+      S.cardBills = S.cardBills || [];
+      // Older entries were saved as a plain "YYYY-MM" calendar month, back when every
+      // card implicitly billed on the 1st - that's exactly what cycleDay defaults to
+      // above, so "YYYY-MM-01" is the correct, lossless equivalent cycle-start date.
+      S.cardBills.forEach(cb => { if (!cb.cycleStart && cb.month) { cb.cycleStart = cb.month + "-01"; delete cb.month; } });
+    }
+
+    // The [start, end] (inclusive, ymd strings) of the billing cycle that contains
+    // date `d`, for a card whose cycle starts on day `cycleDay` of each month.
+    function cycleRange(cycleDay, d) {
+      const day = Math.max(1, Math.min(28, cycleDay || 1));
+      const dt = new Date(d + "T00:00");
+      let y = dt.getFullYear(), m = dt.getMonth();
+      if (dt.getDate() < day) { m--; if (m < 0) { m = 11; y--; } }
+      const start = new Date(y, m, day);
+      const end = new Date(y, m + 1, day);
+      end.setDate(end.getDate() - 1);
+      return [ymd(start), ymd(end)];
+    }
+
+    const cardSpendInCycle = (cardId, s, e) => S.items.filter(i => i.cardId == cardId && i.date >= s && i.date <= e).reduce((sum, i) => sum + i.total, 0);
 
     function addCard() {
-      const n = $("#cnm").value.trim(), l4 = $("#cl4").value.trim();
+      const n = $("#cnm").value.trim(), l4 = $("#cl4").value.trim(), cd = Math.max(1, Math.min(28, +$("#ccd").value || 1));
       if (!n) { $("#cerr").textContent = "Enter a card name."; return; }
       if (l4 && !/^\d{4}$/.test(l4)) { $("#cerr").textContent = "Last 4 digits should be exactly 4 numbers."; return; }
-      S.cards.push({ id: Date.now(), name: n, last4: l4 });
+      S.cards.push({ id: Date.now(), name: n, last4: l4, cycleDay: cd });
       save();
       go("cards");
     }
 
     function delCard(id) {
-      if (!confirm("Delete this card? Past purchases logged against it keep their record but will no longer count toward any card's monthly tally.")) return;
+      if (!confirm("Delete this card? Past purchases logged against it keep their record but will no longer count toward any card's cycle tally.")) return;
       S.cards = S.cards.filter(c => c.id != id);
       S.cardBills = S.cardBills.filter(cb => cb.cardId != id);
       save();
       go("cards");
     }
 
+    function setCardCycle(id) {
+      const el = $("#ccy" + id), c = S.cards.find(x => x.id == id);
+      if (!c) return;
+      c.cycleDay = Math.max(1, Math.min(28, +el.value || 1));
+      save();
+      go("cards");
+    }
+
     function saveCardBill(cardId) {
-      const el = $("#cb" + cardId);
+      const el = $("#cb" + cardId), c = S.cards.find(x => x.id == cardId);
       const amt = +el.value;
       if (!(amt >= 0)) { el.focus(); return; }
-      const m = today().slice(0, 7);
-      const existing = S.cardBills.find(cb => cb.cardId == cardId && cb.month == m);
+      const [cs] = cycleRange(c && c.cycleDay, today());
+      const existing = S.cardBills.find(cb => cb.cardId == cardId && cb.cycleStart == cs);
       if (existing) { existing.amount = amt; existing.date = today(); }
-      else S.cardBills.push({ id: Date.now(), cardId, month: m, amount: amt, date: today() });
+      else S.cardBills.push({ id: Date.now(), cardId, cycleStart: cs, amount: amt, date: today() });
       save();
       go("cards");
     }
@@ -1179,32 +1210,39 @@
     }
 
     function cards() {
-      const m = today().slice(0, 7);
       return `<h1>Manage Credit Cards</h1>
       <div class="card">
         <label style="margin-top:0">Card name</label><input id="cnm" maxlength="30" placeholder="e.g. HDFC Regalia">
         <label>Last 4 digits (optional)</label><input id="cl4" maxlength="4" inputmode="numeric" placeholder="e.g. 4521">
+        <label>Billing cycle starts on day</label><input id="ccd" type="number" min="1" max="28" value="1" placeholder="e.g. 5">
+        <small style="display:block;margin-top:4px">Check your card's statement for its cycle start date - e.g. "5" if your cycle runs 5th to 4th. Enter 1 if it bills on the calendar month, or if you're not sure (you can change this later).</small>
         <div class="err" id="cerr"></div>
         <button class="btn" onclick="addCard()">Add card</button>
       </div>
       ${S.cards.length ? S.cards.map(c => {
-        const spend = cardSpendInMonth(c.id, m);
-        const bill = S.cardBills.find(cb => cb.cardId == c.id && cb.month == m);
+        const [cs, ce] = cycleRange(c.cycleDay, today());
+        const spend = cardSpendInCycle(c.id, cs, ce);
+        const bill = S.cardBills.find(cb => cb.cardId == c.id && cb.cycleStart == cs);
         const diff = bill ? +(bill.amount - spend).toFixed(2) : null;
-        const hist = S.cardBills.filter(cb => cb.cardId == c.id && cb.month != m).sort((a, b) => b.month.localeCompare(a.month)).slice(0, 6);
+        const hist = S.cardBills.filter(cb => cb.cardId == c.id && cb.cycleStart != cs).sort((a, b) => b.cycleStart.localeCompare(a.cycleStart)).slice(0, 6);
         return `<div class="card">
           <div class="head"><b>💳 ${esc(c.name)}</b><button class="del" aria-label="Delete card" onclick="delCard(${c.id})">✕</button></div>
           ${c.last4 ? `<small style="display:block;margin-top:-6px;margin-bottom:8px">•••• ${esc(c.last4)}</small>` : ""}
+          <div class="f" style="align-items:flex-end;margin-bottom:10px">
+            <div><label style="margin-top:0">Cycle starts on day</label><input id="ccy${c.id}" type="number" min="1" max="28" value="${c.cycleDay}"></div>
+            <button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="setCardCycle(${c.id})">Update</button>
+          </div>
+          <small style="display:block;margin:-4px 0 10px;color:var(--mute)">Current cycle: ${df(cs)} – ${df(ce)}</small>
           <div class="two">
-            <div><small>Tracked spend this month</small><br><b>${fm(spend)}</b></div>
+            <div><small>Tracked spend this cycle</small><br><b>${fm(spend)}</b></div>
             <div style="text-align:right"><small>${bill ? "Statement amount" : "Statement not entered"}</small><br><b>${bill ? fm(bill.amount) : "—"}</b></div>
           </div>
           ${bill ? `<div class="row"><div class="g"><b>${diff > 0 ? "Interest & charges" : diff < 0 ? "Not yet billed / credit" : "Matches exactly"}</b><small>Statement − tracked spend</small></div><div class="r"><b class="${diff > 0 ? "up" : diff < 0 ? "dn" : ""}">${diff == 0 ? "₹0" : diff > 0 ? "+" + fm(diff) : "-" + fm(Math.abs(diff))}</b></div></div>` : ""}
-          <label style="margin-top:10px">${bill ? "Update" : "Enter"} this month's statement amount (₹)</label>
+          <label style="margin-top:10px">${bill ? "Update" : "Enter"} this cycle's statement amount (₹)</label>
           <div class="f"><input id="cb${c.id}" type="number" inputmode="decimal" min="0" step="any" value="${bill ? bill.amount : ""}" placeholder="e.g. 18500"><button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="saveCardBill(${c.id})">Save</button></div>
-          ${hist.length ? `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--mute);cursor:pointer">Past months</summary>${hist.map(cb => {
-            const hSpend = cardSpendInMonth(c.id, cb.month), hDiff = +(cb.amount - hSpend).toFixed(2);
-            return `<div class="row"><div class="g">${cb.month}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="delCardBill(${cb.id})">✕</button></div>`;
+          ${hist.length ? `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--mute);cursor:pointer">Past cycles</summary>${hist.map(cb => {
+            const [hs, he] = cycleRange(c.cycleDay, cb.cycleStart), hSpend = cardSpendInCycle(c.id, hs, he), hDiff = +(cb.amount - hSpend).toFixed(2);
+            return `<div class="row"><div class="g">${df(hs)} – ${df(he)}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="delCardBill(${cb.id})">✕</button></div>`;
           }).join("")}</details>` : ""}
         </div>`;
       }).join("") : empty("No cards added yet. Add your first card above.")}
@@ -1584,8 +1622,7 @@
           S.prods = S.prods || [];
           S.bills = S.bills || [];
           S.budgets = S.budgets || {};
-          S.cards = S.cards || [];
-          S.cardBills = S.cardBills || [];
+          defaultCardFields();
           raw();
         }
         const body = JSON.stringify(S);
