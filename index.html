@@ -413,6 +413,11 @@
 
     let S = null;
     try { S = JSON.parse(localStorage.getItem("st")); } catch (e) {}
+    // No saved state at all means this device has genuinely never used the app before -
+    // the one signal the new Login/Signup gate below uses to tell a fresh install apart
+    // from an existing user updating to this version (who has no reason to suddenly see
+    // a screen that didn't exist when they first started using the app).
+    const isFreshInstall = !S;
     S = S || { items: [] };
     S.items = S.items || [];
     S.prods = S.prods || [];
@@ -426,6 +431,12 @@
     S.defaultBudget = S.defaultBudget || S.budget || 25000;
     S.geminiKey = S.geminiKey || "";
     S.userName = S.userName || "";
+    // Whether the one-time Login/Signup screen has been completed on this device - a
+    // fresh install (or after Log out in Settings) shows it again before Home. An
+    // existing install updating to this version is grandfathered in as already
+    // onboarded (isFreshInstall is false for them) rather than suddenly gated behind a
+    // screen that didn't exist when they first started using the app.
+    S.onboarded = S.onboarded || !isFreshInstall;
 
     const raw = () => { try { localStorage.setItem("st", JSON.stringify(S)); } catch (e) {} };
     const save = () => { S.upd = Date.now(); raw(); if (tok) { clearTimeout(timer); timer = setTimeout(sync, 2500); } };
@@ -514,6 +525,8 @@
     window.tot = tot;
     window.addP = addP;
     window.saveSettings = saveSettings;
+    window.continueLocal = continueLocal;
+    window.logOut = logOut;
     window.bs = bs;
     window.bt = bt;
     window.addBatchBill = addBatchBill;
@@ -846,6 +859,40 @@
       go("hist");
     }
 
+    // One-time Login/Signup screen, shown before Home until S.onboarded is set (a
+    // fresh install, or after Log out in Settings). There's no real username/password
+    // account system here - "signing up" just means picking a name, and "logging in"
+    // means optionally connecting the same Google sign-in the Drive backup card on
+    // Home already uses. Either path is fine: the data itself always lives on this
+    // device first, Google is only an optional backup/sync layer on top of it.
+    function login() {
+      return `<div style="min-height:80vh;display:flex;flex-direction:column;justify-content:center">
+        <div style="text-align:center;margin-bottom:24px">
+          <div style="font-size:44px">💰</div>
+          <h1 style="margin:8px 0 2px">Spend Tracker</h1>
+          <small style="color:var(--mute)">Purchases, prices, bills & cards - all in one place.</small>
+        </div>
+        <div class="card">
+          <label style="margin-top:0">Your name</label>
+          <input id="lnm" maxlength="30" placeholder="e.g. Priya" value="${esc(S.userName || "")}">
+          <button class="btn" onclick="gIn()">Sign in with Google</button>
+          <small id="gst" style="display:block;margin-top:6px;color:var(--mute)">${esc(sst)}</small>
+          <button class="btn" style="background:var(--card);color:var(--ink);border:1px solid var(--line);margin-top:12px" onclick="continueLocal()">Continue without signing in</button>
+          <small style="display:block;margin-top:6px;color:var(--mute)">Your data stays on this device either way - Google sign-in only adds an optional backup to your Drive.</small>
+          <div class="err" id="lerr"></div>
+        </div>
+      </div>`;
+    }
+
+    function continueLocal() {
+      const nm = $("#lnm").value.trim();
+      if (!nm) { $("#lerr").textContent = "Enter your name to continue."; return; }
+      S.userName = nm;
+      S.onboarded = true;
+      save();
+      go("home");
+    }
+
     function settings() {
       return `<h1>App Settings</h1>
       <div class="card">
@@ -861,7 +908,12 @@
         <input id="gk" type="password" value="${esc(S.geminiKey || "")}" placeholder="AIzaSy...">
         <small style="display:block;margin-top:6px">Free key from <a href="https://aistudio.google.com/" target="_blank" style="color:var(--blue)">aistudio.google.com</a>.</small>
       </div>
-      <button class="btn" onclick="saveSettings()">Save Settings</button>`;
+      <button class="btn" onclick="saveSettings()">Save Settings</button>
+      <div class="card" style="margin-top:16px">
+        <b>🔐 Account</b>
+        <small style="display:block;margin:6px 0 10px">${ls("gd") ? "Signed in with Google on this device." : "Using Spend Tracker without Google sign-in."}</small>
+        <button class="btn" style="background:var(--card);color:var(--red);border:1px solid var(--line)" onclick="logOut()">Log out</button>
+      </div>`;
     }
 
     function saveSettings() {
@@ -870,6 +922,26 @@
       save();
       alert("Settings saved successfully!");
       go("home");
+    }
+
+    // Disconnects Google Drive (revoking the token, not just forgetting it locally,
+    // when the GIS library can do that) and sends the user back to the Login screen.
+    // Deliberately does NOT touch S.items/bills/cards/etc - logging out only affects
+    // the optional Google-backed session, never the purchases already saved on this
+    // device, so there's nothing destructive for the confirm() below to warn about
+    // beyond losing the backup connection itself.
+    function logOut() {
+      if (!confirm("Log out and disconnect Google Drive? Your purchases, bills and cards stay saved on this device - you can sign back in anytime.")) return;
+      if (refreshTimer) clearTimeout(refreshTimer);
+      if (tok && window.google && google.accounts && google.accounts.oauth2 && google.accounts.oauth2.revoke) {
+        try { google.accounts.oauth2.revoke(tok, () => {}); } catch (e) {}
+      }
+      tok = null;
+      try { localStorage.removeItem("gd"); localStorage.removeItem("gd_token"); localStorage.removeItem("gd_exp"); } catch (e) {}
+      setSt("Not connected. Sign in to back up to Google Drive.");
+      S.onboarded = false;
+      save();
+      go("login");
     }
 
     async function handleBillUpload(file) {
@@ -1747,7 +1819,18 @@
             } catch (e) {}
             scheduleRefresh(lifeMs);
             setSt("Connected & ready to sync");
-            if (v == "home") go("home");
+            if (v == "login") {
+              // Signing in from the Login screen completes onboarding too - carry over
+              // whatever name was typed there (Google's own sign-in doesn't hand back a
+              // profile name here, since the Drive backup scope above is deliberately
+              // narrow and non-sensitive, so it never prompts Google's "unverified app"
+              // warning screen).
+              const nm = $("#lnm");
+              if (nm && nm.value.trim()) S.userName = nm.value.trim();
+              S.onboarded = true;
+              save();
+              go("home");
+            } else if (v == "home") go("home");
             sync();
           } else {
             setSt("Sign-in failed. Try reconnecting.");
@@ -1851,7 +1934,7 @@
       if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
     });
 
-    const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget, cards };
+    const V = { home, hist, add, price, rep, prod, bill, bills, edit, settings, budget, cards, login };
     const N = [
       ["home", "🏠", "Home"],
       ["hist", "🧾", "History"],
@@ -1866,7 +1949,9 @@
     function render(x) {
       v = x;
       $("#app").innerHTML = V[x]();
-      $("#nav").innerHTML = N.map(n => n[1] ? `<button class="${n[0] == v ? "on" : ""}" onclick="go('${n[0]}')"><span>${n[1]}</span>${n[2]}</button>` : `<button class="plus" aria-label="Add purchase" onclick="go('add')">+</button>`).join("");
+      // No bottom nav on the Login screen - there's nothing to navigate to until
+      // onboarding (pick a name, optionally sign in) is actually finished.
+      $("#nav").innerHTML = x === "login" ? "" : N.map(n => n[1] ? `<button class="${n[0] == v ? "on" : ""}" onclick="go('${n[0]}')"><span>${n[1]}</span>${n[2]}</button>` : `<button class="plus" aria-label="Add purchase" onclick="go('add')">+</button>`).join("");
       window.scrollTo(0, 0);
       if (x === "bill") bt();
     }
@@ -1891,19 +1976,26 @@
     // is shown; declining re-arms the floor by pushing Home again, and confirming
     // lets the following history.back() actually leave (closing the app/tab, or
     // returning to whatever was open before it, same as a normal exit).
+    // A device that hasn't completed the Login/Signup screen yet (a fresh install, or
+    // just after Log out in Settings) boots straight into it instead of Home - and the
+    // back-button "floor" below re-arms to whichever of the two is this boot's actual
+    // starting screen, so a back press from Login can't skip onboarding by falling
+    // through to Home.
+    const startScreen = S.onboarded ? "home" : "login";
+
     addEventListener("popstate", e => {
       const state = e.state;
       if (state && state.floor) {
         if (confirm("Exit Spend Tracker?")) history.back();
-        else { history.pushState({ page: "home" }, "", ""); render("home"); }
+        else { history.pushState({ page: startScreen }, "", ""); render(startScreen); }
         return;
       }
-      render((state && state.page) || "home");
+      render((state && state.page) || startScreen);
     });
 
-    history.replaceState({ page: "home", floor: true }, "", "");
-    history.pushState({ page: "home" }, "", "");
-    render("home");
+    history.replaceState({ page: startScreen, floor: true }, "", "");
+    history.pushState({ page: startScreen }, "", "");
+    render(startScreen);
     checkReminders();
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState == "visible") {
