@@ -457,6 +457,12 @@
     // CLOSED cycle, which is what the user actually has a statement for most of the time;
     // shiftCardCycle()/jumpCardCycle() let them navigate to any other cycle explicitly.
     let cardCycleSel = {};
+    // Manage Credit Cards screen UI state: whether the "add a card" form is open
+    // (tucked behind a header button rather than always taking up space), and which
+    // cards currently have their full cycle/statement panel expanded (each card shows
+    // only a compact summary - name, last 4, this cycle's tracked spend - until its
+    // own "Manage" button is tapped). Keyed by card id so each card expands independently.
+    let addCardOpen = false, cardMgmtOpen = {};
 
     const inMo = m => S.items.filter(i => i.date.startsWith(m)).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
     const sum = a => a.reduce((s, i) => s + i.total, 0);
@@ -527,6 +533,8 @@
     window.delCardBill = delCardBill;
     window.shiftCardCycle = shiftCardCycle;
     window.jumpCardCycle = jumpCardCycle;
+    window.toggleAddCard = toggleAddCard;
+    window.toggleCardMgmt = toggleCardMgmt;
     window.hideSelList = hideSelList;
 
     function setBMo(m) { bMo = m; go("budget"); }
@@ -1228,12 +1236,23 @@
       go('cards');
     }
 
+    function toggleAddCard() {
+      addCardOpen = !addCardOpen;
+      go('cards');
+    }
+
+    function toggleCardMgmt(id) {
+      cardMgmtOpen[id] = !cardMgmtOpen[id];
+      go('cards');
+    }
+
     function addCard() {
       const n = $("#cnm").value.trim(), l4 = $("#cl4").value.trim(), cd = Math.max(1, Math.min(28, +$("#ccd").value || 1));
       if (!n) { $("#cerr").textContent = "Enter a card name."; return; }
       if (l4 && !/^\d{4}$/.test(l4)) { $("#cerr").textContent = "Last 4 digits should be exactly 4 numbers."; return; }
       S.cards.push({ id: Date.now(), name: n, last4: l4, cycleDay: cd });
       save();
+      addCardOpen = false;
       go("cards");
     }
 
@@ -1276,29 +1295,41 @@
     }
 
     function cards() {
-      return `<h1>Manage Credit Cards</h1>
-      <div class="card">
+      return `<div class="head"><h1 style="margin:0">Manage Credit Cards</h1><button class="btn" style="flex:none;width:auto;margin:0;padding:10px 16px" onclick="toggleAddCard()">${addCardOpen ? "✕ Close" : "+ Add card"}</button></div>
+      ${addCardOpen ? `<div class="card">
         <label style="margin-top:0">Card name</label><input id="cnm" maxlength="30" placeholder="e.g. HDFC Regalia">
         <label>Last 4 digits (optional)</label><input id="cl4" maxlength="4" inputmode="numeric" placeholder="e.g. 4521">
         <label>Billing cycle starts on day</label><input id="ccd" type="number" min="1" max="28" value="1" placeholder="e.g. 5">
         <small style="display:block;margin-top:4px">Check your card's statement for its cycle start date - e.g. "5" if your cycle runs 5th to 4th. Enter 1 if it bills on the calendar month, or if you're not sure (you can change this later).</small>
         <div class="err" id="cerr"></div>
         <button class="btn" onclick="addCard()">Add card</button>
-      </div>
+      </div>` : ""}
       ${S.cards.length ? S.cards.map(c => {
-        const [todayCs] = cycleRange(c.cycleDay, today());
+        const [todayCs, todayCe] = cycleRange(c.cycleDay, today());
+        const openSpend = cardSpendInCycle(c.id, todayCs, todayCe);
+        const closedStart = defaultCardCycleStart(c);
+        const closedBillIn = S.cardBills.some(cb => cb.cardId == c.id && cb.cycleStart == closedStart);
+        const open = !!cardMgmtOpen[c.id];
+
         const selCs = cardCycleStartFor(c);
         const [cs, ce] = cycleRange(c.cycleDay, selCs);
         const isCurrent = cs == todayCs;
-        const isDefault = cs == defaultCardCycleStart(c);
+        const isDefault = cs == closedStart;
         const spend = cardSpendInCycle(c.id, cs, ce);
         const bill = S.cardBills.find(cb => cb.cardId == c.id && cb.cycleStart == cs);
         const diff = bill ? +(bill.amount - spend).toFixed(2) : null;
         const hist = S.cardBills.filter(cb => cb.cardId == c.id && cb.cycleStart != cs).sort((a, b) => b.cycleStart.localeCompare(a.cycleStart)).slice(0, 6);
+
         return `<div class="card">
           <div class="head"><b>💳 ${esc(c.name)}</b><button class="del" aria-label="Delete card" onclick="delCard(${c.id})">✕</button></div>
           ${c.last4 ? `<small style="display:block;margin-top:-6px;margin-bottom:8px">•••• ${esc(c.last4)}</small>` : ""}
-          <div class="f" style="align-items:flex-end;margin-bottom:10px">
+          <div class="two">
+            <div><small>Tracked this cycle (open)</small><br><b>${fm(openSpend)}</b></div>
+            <div style="text-align:right"><small>Most recent statement</small><br><b class="${closedBillIn ? "" : "up"}">${closedBillIn ? "Entered" : "Not entered yet"}</b></div>
+          </div>
+          <button class="btn" style="padding:10px" onclick="toggleCardMgmt(${c.id})">${open ? "Hide details ▲" : "Manage ▾"}</button>
+          ${open ? `
+          <div class="f" style="align-items:flex-end;margin:12px 0 10px">
             <div><label style="margin-top:0">Cycle starts on day</label><input id="ccy${c.id}" type="number" min="1" max="28" value="${c.cycleDay}"></div>
             <button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="setCardCycle(${c.id})">Update</button>
           </div>
@@ -1315,8 +1346,9 @@
             const [hs, he] = cycleRange(c.cycleDay, cb.cycleStart), hSpend = cardSpendInCycle(c.id, hs, he), hDiff = +(cb.amount - hSpend).toFixed(2);
             return `<div class="row" style="cursor:pointer" onclick="jumpCardCycle(${c.id},'${cb.cycleStart}')"><div class="g">${df(hs)} – ${df(he)}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="event.stopPropagation();delCardBill(${cb.id})">✕</button></div>`;
           }).join("")}</details>` : ""}
+          ` : ""}
         </div>`;
-      }).join("") : empty("No cards added yet. Add your first card above.")}
+      }).join("") : empty("No cards added yet. Tap + Add card above to add your first one.")}
       <button class="link" style="display:block;margin:12px auto 0" onclick="go('home')">Back to Home</button>`;
     }
 
