@@ -476,11 +476,15 @@
     // Which recurring bills currently have their "mark paid" payment-mode picker open
     // (home's due-soon banner and the Bills & EMIs list both use this), keyed by bill id.
     let markPayOpen = {};
+    // Purchase history shows only the most recent HIST_LIMIT entries by default (a full
+    // month can run to a long scroll) until "Show more" is tapped; reset whenever the
+    // viewed month changes (see shift() below) so a new month always opens collapsed.
+    let histShowAll = false;
 
     const inMo = m => S.items.filter(i => i.date.startsWith(m)).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
     const sum = a => a.reduce((s, i) => s + i.total, 0);
     const row = i => `<div class="row"><span class="em">${emo(i.name)}</span><div class="g"><b>${esc(i.name)}</b><small>${i.qty} ${i.unit} · ${fm(i.price)}/${i.unit}${i.store ? " · " + esc(i.store) : ""}</small></div><div class="r"><b>${fm(i.total)}</b><small>${df(i.date)}</small></div></div>`;
-    const shift = d => { const [y, m] = mo.split("-").map(Number); const n = new Date(y, m - 1 + d, 1); mo = n.getFullYear() + "-" + String(n.getMonth() + 1).padStart(2, "0"); go(v); };
+    const shift = d => { const [y, m] = mo.split("-").map(Number); const n = new Date(y, m - 1 + d, 1); mo = n.getFullYear() + "-" + String(n.getMonth() + 1).padStart(2, "0"); histShowAll = false; go(v); };
     const mnav = () => `<div class="mnav"><button onclick="window.shift(-1)">‹</button><span>${new Date(mo + "-01T00:00").toLocaleDateString("en-IN", { month: "long", year: "numeric" })}</span><button onclick="window.shift(1)">›</button></div>`;
     const empty = t => `<div class="empty">${t}</div>`;
 
@@ -502,9 +506,11 @@
     window.shift = shift;
     window.editItem = editItem;
     window.del = del;
+    window.toggleHistAll = toggleHistAll;
     window.eTot = eTot;
     window.saveEdit = saveEdit;
     window.pick = pick;
+    window.ctC = ctC;
     window.tot = tot;
     window.addP = addP;
     window.saveSettings = saveSettings;
@@ -656,11 +662,13 @@
       <button class="link" style="display:block;margin:12px auto 0" onclick="go('home')">Back to Home</button>`;
     }
 
+    const HIST_LIMIT = 10;
+
     function hist() {
       const it = inMo(mo);
-      return `<h1>Purchase history</h1>${mnav()}
-      <div class="card"><small>Total this month</small><div style="font-size:22px;font-weight:700">${fm(sum(it))}</div></div>
-      <div class="card">${it.length ? it.map(i => `
+      const shown = histShowAll ? it : it.slice(0, HIST_LIMIT);
+      const moreLeft = it.length - shown.length;
+      const rows = shown.map(i => `
         <div class="row">
           <span class="em">${emo(i.name)}</span>
           <div class="g">
@@ -675,7 +683,21 @@
               <button class="del" aria-label="Delete" onclick="del(${i.id})">✕</button>
             </div>
           </div>
-        </div>`).join("") : empty("No purchases in this month.")}</div>`;
+        </div>`).join("");
+      // "Show more" appears once there are more than HIST_LIMIT entries left to reveal;
+      // once everything is shown, "Show less" collapses back to the most recent
+      // HIST_LIMIT instead of leaving a long list expanded indefinitely.
+      const toggleBtn = moreLeft > 0
+        ? `<button class="link" style="display:block;margin:10px auto 0" onclick="toggleHistAll()">Show ${moreLeft} more</button>`
+        : (histShowAll && it.length > HIST_LIMIT ? `<button class="link" style="display:block;margin:10px auto 0" onclick="toggleHistAll()">Show less</button>` : "");
+      return `<h1>Purchase history</h1>${mnav()}
+      <div class="card"><small>Total this month</small><div style="font-size:22px;font-weight:700">${fm(sum(it))}</div></div>
+      <div class="card">${it.length ? rows + toggleBtn : empty("No purchases in this month.")}</div>`;
+    }
+
+    function toggleHistAll() {
+      histShowAll = !histShowAll;
+      go("hist");
     }
 
     function del(id) {
@@ -761,7 +783,7 @@
       <div class="chips">${allP().map((p, i) => `<button class="chip" onclick="pick(${i})"><span>${p[1]}</span>${p[0]}</button>`).join("")}</div>
       <div class="card">
         <label style="margin-top:0">Product</label><input id="nm" list="kp" placeholder="Pick above or type name" maxlength="40">${kpList()}
-        <label>Category</label><select id="ct">${opts(Object.keys(AllC()), "Grocery")}</select>
+        <label>Category</label><select id="ct" onchange="ctC()">${opts(Object.keys(AllC()), "Grocery")}</select>
         <label>Store</label><input id="sto" list="stl" maxlength="40" placeholder="e.g. EWNS Provision Store"><datalist id="stl">${[...new Set(S.items.map(i => i.store).filter(Boolean))].map(x => `<option value="${esc(x)}">`).join("")}</datalist>
         <label>Quantity</label>
         <div class="f"><input id="q" type="number" inputmode="decimal" value="1" min="0" step="any" oninput="tot()"><select id="u">${opts(UN, "kg")}</select></div>
@@ -774,6 +796,15 @@
         <div class="err" id="err"></div>
         <button class="btn" onclick="addP()">Save purchase</button>
       </div>`;
+    }
+
+    // After picking a category, the native <select> picker closes but the page itself
+    // doesn't move - on a phone the form just sits where it was, often with the rest of
+    // the fields (Store onward) still below the fold, so the user has to scroll down
+    // manually to keep filling it in. Bring the next field into view instead.
+    function ctC() {
+      const sto = $("#sto");
+      if (sto) sto.scrollIntoView({ behavior: "smooth", block: "center" });
     }
 
     function pick(i) {
