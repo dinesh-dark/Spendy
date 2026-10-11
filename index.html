@@ -449,6 +449,14 @@
 
     let v = "home", mo = today().slice(0, 7), bMo = today().slice(0, 7), sel = null, editId = null, B = null;
     let repType = "month", repAnchor = today(), repFrom = null, repTo = null;
+    // Which billing cycle each card's "Manage Credit Cards" entry is currently showing/
+    // editing, keyed by card id. A statement only exists once its cycle has closed, so
+    // by the time the user has the number in hand "today" usually already belongs to the
+    // NEXT cycle - defaulting to today's cycle (as this used to) attributed the amount to
+    // the wrong one. Left unset, cardCycleStartFor() below falls back to the most recently
+    // CLOSED cycle, which is what the user actually has a statement for most of the time;
+    // shiftCardCycle()/jumpCardCycle() let them navigate to any other cycle explicitly.
+    let cardCycleSel = {};
 
     const inMo = m => S.items.filter(i => i.date.startsWith(m)).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
     const sum = a => a.reduce((s, i) => s + i.total, 0);
@@ -517,6 +525,8 @@
     window.saveCardBill = saveCardBill;
     window.setCardCycle = setCardCycle;
     window.delCardBill = delCardBill;
+    window.shiftCardCycle = shiftCardCycle;
+    window.jumpCardCycle = jumpCardCycle;
     window.hideSelList = hideSelList;
 
     function setBMo(m) { bMo = m; go("budget"); }
@@ -1103,6 +1113,19 @@
       return S.cards.map(c => `<option value="${c.id}" ${String(selId) == String(c.id) ? "selected" : ""}>${esc(c.name)}${c.last4 ? " •" + esc(c.last4) : ""}</option>`).join("");
     }
 
+    // Groups a purchase by payment mode for the Reports breakdown - Credit Card
+    // purchases are split out per card (by name) rather than lumped into one bucket,
+    // since the whole point of tracking cards separately is seeing which one is
+    // driving spend; an item saved before "Credit Card" existed, or whose card was
+    // since deleted, still needs a bucket, hence the fallbacks below.
+    function payKey(i) {
+      if (i.pay == "Credit Card") {
+        const c = S.cards.find(x => x.id == i.cardId);
+        return c ? "Credit Card – " + c.name : "Credit Card (deleted card)";
+      }
+      return i.pay || "Unspecified";
+    }
+
     // " (Card Name)" for history rows, or "" if the card was since deleted.
     function cardLabel(cardId) {
       const c = S.cards.find(c => c.id == cardId);
@@ -1166,6 +1189,45 @@
 
     const cardSpendInCycle = (cardId, s, e) => S.items.filter(i => i.cardId == cardId && i.date >= s && i.date <= e).reduce((sum, i) => sum + i.total, 0);
 
+    // The canonical start date of the cycle `n` whole cycles away from the cycle
+    // containing `anchorYmd` (n can be negative). Re-derives the cycle containing
+    // anchorYmd first via cycleRange (so a stale or non-canonical anchor - e.g. an old
+    // cycleStart left over from before the card's cycleDay was changed - still lands in
+    // the right cycle) before stepping by whole months; cycleDay is always <=28, so
+    // adding/subtracting months never overflows into the wrong month.
+    function cycleStartShift(cycleDay, anchorYmd, n) {
+      const day = Math.max(1, Math.min(28, cycleDay || 1));
+      const [cs] = cycleRange(day, anchorYmd);
+      const d = new Date(cs + "T00:00");
+      return ymd(new Date(d.getFullYear(), d.getMonth() + n, day));
+    }
+
+    // Most recently CLOSED cycle's start - the default cycle to show/edit, since a
+    // statement is only available once its cycle has ended.
+    function defaultCardCycleStart(c) {
+      const [todayCs] = cycleRange(c.cycleDay, today());
+      return cycleStartShift(c.cycleDay, todayCs, -1);
+    }
+
+    function cardCycleStartFor(c) {
+      return cardCycleSel[c.id] || defaultCardCycleStart(c);
+    }
+
+    function shiftCardCycle(id, n) {
+      const c = S.cards.find(x => x.id == id);
+      if (!c) return;
+      const [todayCs] = cycleRange(c.cycleDay, today());
+      let next = cycleStartShift(c.cycleDay, cardCycleStartFor(c), n);
+      if (next > todayCs) next = todayCs; // the cycle in progress is as far forward as there's anything to show
+      cardCycleSel[id] = next;
+      go('cards');
+    }
+
+    function jumpCardCycle(id, cycleStart) {
+      cardCycleSel[id] = cycleStart;
+      go('cards');
+    }
+
     function addCard() {
       const n = $("#cnm").value.trim(), l4 = $("#cl4").value.trim(), cd = Math.max(1, Math.min(28, +$("#ccd").value || 1));
       if (!n) { $("#cerr").textContent = "Enter a card name."; return; }
@@ -1193,9 +1255,13 @@
 
     function saveCardBill(cardId) {
       const el = $("#cb" + cardId), c = S.cards.find(x => x.id == cardId);
+      if (!c) return;
       const amt = +el.value;
       if (!(amt >= 0)) { el.focus(); return; }
-      const [cs] = cycleRange(c && c.cycleDay, today());
+      // Save against whichever cycle is currently selected/navigated to (see
+      // cardCycleStartFor above) - NOT always "today's" cycle, since by the time a
+      // statement is in hand its cycle has usually already closed and a new one begun.
+      const cs = cardCycleStartFor(c);
       const existing = S.cardBills.find(cb => cb.cardId == cardId && cb.cycleStart == cs);
       if (existing) { existing.amount = amt; existing.date = today(); }
       else S.cardBills.push({ id: Date.now(), cardId, cycleStart: cs, amount: amt, date: today() });
@@ -1220,7 +1286,11 @@
         <button class="btn" onclick="addCard()">Add card</button>
       </div>
       ${S.cards.length ? S.cards.map(c => {
-        const [cs, ce] = cycleRange(c.cycleDay, today());
+        const [todayCs] = cycleRange(c.cycleDay, today());
+        const selCs = cardCycleStartFor(c);
+        const [cs, ce] = cycleRange(c.cycleDay, selCs);
+        const isCurrent = cs == todayCs;
+        const isDefault = cs == defaultCardCycleStart(c);
         const spend = cardSpendInCycle(c.id, cs, ce);
         const bill = S.cardBills.find(cb => cb.cardId == c.id && cb.cycleStart == cs);
         const diff = bill ? +(bill.amount - spend).toFixed(2) : null;
@@ -1232,7 +1302,8 @@
             <div><label style="margin-top:0">Cycle starts on day</label><input id="ccy${c.id}" type="number" min="1" max="28" value="${c.cycleDay}"></div>
             <button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="setCardCycle(${c.id})">Update</button>
           </div>
-          <small style="display:block;margin:-4px 0 10px;color:var(--mute)">Current cycle: ${df(cs)} – ${df(ce)}</small>
+          <div class="mnav" style="margin-bottom:4px"><button onclick="shiftCardCycle(${c.id},-1)">‹</button><span>${df(cs)} – ${df(ce)}${isCurrent ? " (open)" : ""}</span><button onclick="shiftCardCycle(${c.id},1)">›</button></div>
+          <small style="display:block;margin:-4px 0 10px;color:var(--mute)">${isCurrent ? "This cycle is still open - come back once your statement is generated, or go back one cycle (‹) to enter the one you just got." : isDefault ? "Most recently closed cycle - usually the one your latest statement is for." : "Browsing an earlier cycle."}</small>
           <div class="two">
             <div><small>Tracked spend this cycle</small><br><b>${fm(spend)}</b></div>
             <div style="text-align:right"><small>${bill ? "Statement amount" : "Statement not entered"}</small><br><b>${bill ? fm(bill.amount) : "—"}</b></div>
@@ -1242,7 +1313,7 @@
           <div class="f"><input id="cb${c.id}" type="number" inputmode="decimal" min="0" step="any" value="${bill ? bill.amount : ""}" placeholder="e.g. 18500"><button class="btn" style="flex:none;width:auto;padding:0 16px" onclick="saveCardBill(${c.id})">Save</button></div>
           ${hist.length ? `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--mute);cursor:pointer">Past cycles</summary>${hist.map(cb => {
             const [hs, he] = cycleRange(c.cycleDay, cb.cycleStart), hSpend = cardSpendInCycle(c.id, hs, he), hDiff = +(cb.amount - hSpend).toFixed(2);
-            return `<div class="row"><div class="g">${df(hs)} – ${df(he)}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="delCardBill(${cb.id})">✕</button></div>`;
+            return `<div class="row" style="cursor:pointer" onclick="jumpCardCycle(${c.id},'${cb.cycleStart}')"><div class="g">${df(hs)} – ${df(he)}<br><small>Tracked ${fm(hSpend)}</small></div><div class="r"><b>${fm(cb.amount)}</b><small class="${hDiff > 0 ? "up" : hDiff < 0 ? "dn" : ""}">${hDiff == 0 ? "Matches" : hDiff > 0 ? "+" + fm(hDiff) + " chgs" : "-" + fm(Math.abs(hDiff)) + " cr"}</small></div><button class="del" aria-label="Remove entry" onclick="event.stopPropagation();delCardBill(${cb.id})">✕</button></div>`;
           }).join("")}</details>` : ""}
         </div>`;
       }).join("") : empty("No cards added yet. Add your first card above.")}
@@ -1321,6 +1392,18 @@
       const pby = {}; prevIt.forEach(i => pby[i.cat] = (pby[i.cat] || 0) + i.total);
       const cats = Object.entries(by).sort((a, b) => b[1] - a[1]);
       const ac = AllC();
+
+      // Payment-method breakdown (Cash/UPI/Card/Credit Card, cards split by name) for
+      // the same selected period, with the same previous-period comparison as the
+      // category breakdown above.
+      const byPay = {}; curIt.forEach(i => byPay[payKey(i)] = (byPay[payKey(i)] || 0) + i.total);
+      const pbyPay = {}; prevIt.forEach(i => pbyPay[payKey(i)] = (pbyPay[payKey(i)] || 0) + i.total);
+      const payRows = Object.entries(byPay).sort((a, b) => b[1] - a[1]);
+      const payPalette = ["#6366f1", "#06b6d4", "#f59e0b", "#ef4444", "#10b981", "#8b5cf6", "#ec4899", "#84cc16", "#0ea5e9", "#f97316"];
+      const payHtml = payRows.map(([k, a], idx) => {
+        const pa = pbyPay[k] || 0, d = pa ? ((a - pa) / pa) * 100 : (a ? 100 : 0), pct = t ? (a / t) * 100 : 0;
+        return `<div class="leg"><i style="background:${payPalette[idx % payPalette.length]}"></i>${esc(k)}<b>${fm(a)}</b></div><div style="font-size:11px;color:var(--mute);margin:-4px 0 6px 18px">${pct.toFixed(0)}% of total${pa ? " · " + ((d > 0 ? "▲ +" : "▼ ") + Math.abs(d).toFixed(0) + "% vs prev") : " · new this period"}</div>`;
+      }).join("");
       const C = 2 * Math.PI * 40; let acc = 0;
       const arcs = cats.map(([c, a]) => {
         const l = (a / t) * C, s = `<circle cx="60" cy="60" r="40" fill="none" stroke="${ac[c] || "#888"}" stroke-width="18" stroke-dasharray="${l} ${C - l}" stroke-dashoffset="${-acc}" transform="rotate(-90 60 60)"/>`;
@@ -1356,6 +1439,7 @@
         const pa = pby[c] || 0, d = pa ? ((a - pa) / pa) * 100 : (a ? 100 : 0);
         return `<div class="leg"><i style="background:${ac[c] || "#888"}"></i>${c}<b>${fm(a)}</b></div><div style="font-size:11px;color:var(--mute);margin:-4px 0 6px 18px">${pa ? ((d > 0 ? "▲ +" : "▼ ") + Math.abs(d).toFixed(0) + "% vs prev") : "new this period"}</div>`;
       }).join("")}</div></div></div>
+      <div class="card"><b>By payment method</b>${payHtml}</div>
       <div class="card"><b>Spending over time</b><svg viewBox="0 0 290 115" width="100%" role="img" aria-label="Spending over time">${bars}</svg></div>`;
     }
 
