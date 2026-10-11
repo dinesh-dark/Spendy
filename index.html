@@ -445,6 +445,16 @@
     const addDays = (ds, n) => { const d = new Date(ds + "T00:00"); d.setDate(d.getDate() + n); return ymd(d); };
     const opts = (a, x) => a.map(o => `<option ${o == x ? "selected" : ""}>${esc(o)}</option>`).join("");
 
+    // Payment modes offered everywhere a purchase/bill-payment is recorded. Kept as one
+    // shared list + builder so Add/Edit/Scan-verify/Mark-paid can't drift out of sync.
+    const PAY_MODES = ["Cash", "UPI", "Card", "Bank Account", "Credit Card"];
+    // A payment-mode <select>'s options, with a disabled placeholder standing in for
+    // "nothing chosen yet" - no mode defaults to pre-selected, so every form that uses
+    // this has to be paired with a submit-time check that the value isn't still "".
+    // When x already holds a real mode (editing an existing item, say) that mode is
+    // selected instead and the placeholder is simply unreachable again.
+    const payOpts = x => `<option value="" disabled ${x ? "" : "selected"}>Choose payment mode…</option>${opts(PAY_MODES, x)}`;
+
     const getBudgetForMonth = m => (S.budgets && typeof S.budgets[m] === "number") ? S.budgets[m] : (S.defaultBudget || 25000);
 
     let v = "home", mo = today().slice(0, 7), bMo = today().slice(0, 7), sel = null, editId = null, B = null;
@@ -463,6 +473,9 @@
     // only a compact summary - name, last 4, this cycle's tracked spend - until its
     // own "Manage" button is tapped). Keyed by card id so each card expands independently.
     let addCardOpen = false, cardMgmtOpen = {};
+    // Which recurring bills currently have their "mark paid" payment-mode picker open
+    // (home's due-soon banner and the Bills & EMIs list both use this), keyed by bill id.
+    let markPayOpen = {};
 
     const inMo = m => S.items.filter(i => i.date.startsWith(m)).sort((a, b) => b.date.localeCompare(a.date) || b.id - a.id);
     const sum = a => a.reduce((s, i) => s + i.total, 0);
@@ -505,7 +518,9 @@
     window.delProd = delProd;
     window.shiftRep = shiftRep;
     window.bfC = bfC;
-    window.markPaid = markPaid;
+    window.markPaidOpen = markPaidOpen;
+    window.mpC = mpC;
+    window.confirmMarkPaid = confirmMarkPaid;
     window.addBill = addBill;
     window.delBill = delBill;
     window.askNotif = askNotif;
@@ -568,7 +583,7 @@
           </div>
         </div>
       </div>
-      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small${nextDue(x) < today() ? ' class="up"' : ""}>${nextDue(x) < today() ? "Overdue since " + df(nextDue(x)) : nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b><button class="link" style="display:block;margin-top:4px" onclick="markPaid(${x.id})">Mark paid</button></div></div>`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
+      ${due.length ? `<div class="card" style="border-color:#f59e0b"><b>⏰ ${due.length} bill${due.length > 1 ? "s" : ""} due soon</b>${due.map(x => `<div class="row"><span class="em">${BE[x.category] || "🧾"}</span><div class="g"><b>${esc(x.name)}</b><small${nextDue(x) < today() ? ' class="up"' : ""}>${nextDue(x) < today() ? "Overdue since " + df(nextDue(x)) : nextDue(x) == today() ? "Due today" : "Due " + df(nextDue(x))}</small></div><div class="r"><b>${fm(x.amount)}</b>${markPayOpen[x.id] ? "" : `<button class="link" style="display:block;margin-top:4px" onclick="markPaidOpen(${x.id})">Mark paid</button>`}</div></div>${markPayOpen[x.id] ? markPaidPanel(x) : ""}`).join("")}<button class="link" onclick="go('bills')">Manage bills</button></div>` : ""}
       <div class="tiles">
         <button class="tile" onclick="go('add')">➕<b>Add purchase</b><small>Log item manually</small></button>
         <button class="tile" onclick="go('bill')">📷<b>AI Bill Scanner</b><small>Strict OCR verification</small></button>
@@ -696,7 +711,7 @@
         <label>Date</label>
         <input id="edt" type="date" value="${item.date}">
         <label>Payment mode</label>
-        <select id="epm" onchange="epmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], item.pay || "Cash")}</select>
+        <select id="epm" onchange="epmC()">${payOpts(item.pay || "")}</select>
         <div id="epmx">${item.pay == "Credit Card" ? cardPickerHtml(item.cardId || (S.cards[0] && S.cards[0].id), "epmcard") : ""}</div>
         <label>Notes</label>
         <input id="ent" maxlength="80" value="${esc(item.notes || "")}">
@@ -715,11 +730,12 @@
     function saveEdit() {
       const item = S.items.find(i => i.id == editId);
       if (!item) return go("hist");
-      const name = $("#enm").value.trim(), qty = +$("#eq").value, price = +$("#epr").value, date = $("#edt").value;
+      const name = $("#enm").value.trim(), qty = +$("#eq").value, price = +$("#epr").value, date = $("#edt").value, epm = $("#epm").value;
       if (!name || !(qty > 0) || !(price >= 0) || !date) {
         $("#eerr").textContent = "Fill in a valid name, quantity > 0, price, and date.";
         return;
       }
+      if (!epm) { $("#eerr").textContent = "Choose a payment mode."; return; }
       item.name = stdName(name);
       item.cat = $("#ect").value;
       item.store = $("#esto").value.trim();
@@ -728,7 +744,7 @@
       item.price = price;
       item.total = qty * price;
       item.date = date;
-      const epm = $("#epm").value, ecc = $("#epmcard");
+      const ecc = $("#epmcard");
       item.pay = epm;
       item.cardId = epm == "Credit Card" && ecc ? ecc.value : "";
       item.notes = $("#ent").value.trim();
@@ -751,7 +767,7 @@
         <div class="f"><input id="q" type="number" inputmode="decimal" value="1" min="0" step="any" oninput="tot()"><select id="u">${opts(UN, "kg")}</select></div>
         <label>Price per unit (₹)</label><input id="pr" type="number" inputmode="decimal" min="0" step="any" oninput="tot()" placeholder="e.g. 40">
         <label>Date</label><input id="dt" type="date" value="${today()}">
-        <label>Payment mode</label><select id="pm" onchange="pmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], "Cash")}</select>
+        <label>Payment mode</label><select id="pm" onchange="pmC()">${payOpts("")}</select>
         <div id="pmx"></div>
         <label>Notes (optional)</label><input id="nt" maxlength="80" placeholder="e.g. Provisions">
         <div class="total"><span>Total amount</span><span id="tt">₹0</span></div>
@@ -779,6 +795,7 @@
         return;
       }
       const pm = g("pm"), cc = $("#pmcard");
+      if (!pm) { $("#err").textContent = "Choose a payment mode."; return; }
       S.items.push({
         id: Date.now(),
         name: stdName(name),
@@ -865,7 +882,7 @@
         B.busy = false;
         B.store = parsedJson.store || "";
         B.date = parsedJson.date || today();
-        B.payment = parsedJson.payment || "Cash";
+        B.payment = PAY_MODES.includes(parsedJson.payment) ? parsedJson.payment : "";
         B.total = parsedJson.total || 0;
         B.items = (parsedJson.items || []).map(i => ({ ...i, on: true }));
         B.rawJson = JSON.stringify({
@@ -910,7 +927,7 @@
         <input maxlength="40" value="${esc(B.store || "")}" placeholder="Store name" oninput="setBField('store', this.value)">
         <div class="f">
           <div><label>Date</label><input type="date" value="${B.date}" oninput="setBField('date', this.value)"></div>
-          <div><label>Payment</label><select onchange="setBField('payment', this.value);bPmC()">${opts(["Cash", "UPI", "Card", "Credit Card"], B.payment)}</select></div>
+          <div><label>Payment</label><select onchange="setBField('payment', this.value);bPmC()">${payOpts(B.payment)}</select></div>
         </div>
         <div id="bpmx">${B.payment == "Credit Card" ? cardPickerHtml(B.cardId || (S.cards[0] && S.cards[0].id), "", "setBField('cardId', this.value)") : ""}</div>
         <details style="margin-top:8px">
@@ -994,6 +1011,7 @@
         $("#berr").textContent = "Every selected item requires a valid name, quantity > 0, and amount.";
         return;
       }
+      if (!B.payment) { $("#berr").textContent = "Choose a payment mode."; return; }
 
       const t = on.reduce((s, i) => s + (+i.amount || 0), 0);
       if (B.total && Math.abs(t - B.total) > 1) {
@@ -1013,7 +1031,7 @@
           price: +(i.amount / i.qty).toFixed(2),
           total: +i.amount,
           date: B.date,
-          pay: B.payment || "Cash",
+          pay: B.payment,
           cardId: B.payment == "Credit Card" ? (B.cardId || "") : "",
           store: (B.store || "").trim(),
           notes: "Scanned from bill"
@@ -1536,7 +1554,44 @@
 
     function bfC() { $("#bfx").innerHTML = bfHtml($("#bf").value); }
 
-    function markPaid(id) {
+    // Opens/closes the inline "which payment mode?" picker shown under a bill before it
+    // can actually be marked paid (same toggle button triggers both Mark paid and the
+    // panel's own Cancel, since both just flip this flag and re-render).
+    function markPaidOpen(id) {
+      markPayOpen[id] = !markPayOpen[id];
+      go(v);
+    }
+
+    // Shows/hides the "which card?" sub-picker inside an open mark-paid panel, same
+    // pattern as pmC()/epmC()/bPmC() for the Add/Edit/Scan forms.
+    function mpC(id) {
+      const box = $("#mpx" + id), sel = $("#mp" + id);
+      if (!box || !sel) return;
+      box.innerHTML = sel.value == "Credit Card" ? cardPickerHtml(S.cards[0] && S.cards[0].id, "mpcard" + id) : "";
+    }
+
+    function markPaidPanel(b) {
+      return `<div class="card" style="margin:6px 0 10px">
+        <label style="margin-top:0">Paid via</label>
+        <select id="mp${b.id}" onchange="mpC(${b.id})">${payOpts("")}</select>
+        <div id="mpx${b.id}"></div>
+        <div class="err" id="mperr${b.id}"></div>
+        <div class="f" style="margin-top:4px">
+          <button class="btn" style="flex:none;width:auto;margin:0;padding:0 16px" onclick="confirmMarkPaid(${b.id})">Confirm paid</button>
+          <button class="link" onclick="markPaidOpen(${b.id})">Cancel</button>
+        </div>
+      </div>`;
+    }
+
+    function confirmMarkPaid(id) {
+      const sel = $("#mp" + id);
+      const pay = sel ? sel.value : "";
+      if (!pay) { const err = $("#mperr" + id); if (err) err.textContent = "Choose a payment mode."; return; }
+      const cc = $("#mpcard" + id);
+      markPaid(id, pay, pay == "Credit Card" && cc ? cc.value : "");
+    }
+
+    function markPaid(id, pay, cardId) {
       const b = S.bills.find(x => x.id == id);
       if (!b) return;
       S.items.push({
@@ -1548,10 +1603,12 @@
         price: b.amount,
         total: b.amount,
         date: today(),
-        pay: "",
+        pay: pay || "",
+        cardId: cardId || "",
         store: "",
         notes: "Recurring commitment"
       });
+      delete markPayOpen[id];
       save();
       go(v);
     }
@@ -1588,7 +1645,7 @@
       <div id="bfx">${bfHtml("monthly")}</div>
       <label>Notes (optional)</label><input id="bnt" maxlength="60">
       <div class="err" id="berr"></div><button class="btn" onclick="addBill()">Save bill</button></div>
-      <div class="card"><b>Your recurring bills</b>${list.length ? list.map(b => { const paid = periodPaid(b), overdue = !paid && b.nd < today(); return `<div class="row"><span class="em">${BE[b.category] || "🧾"}</span><div class="g"><b>${esc(b.name)}</b><small>${esc(b.category)} · ${freqTxt(b)}</small><small${overdue ? ' class="up"' : ""}>${paid ? "Next " + df(b.nd) : overdue ? "Overdue since " + df(b.nd) : b.nd == today() ? "Due today" : "Due " + df(b.nd)}</small></div><div class="r"><b>${fm(b.amount)}</b>${!paid ? `<button class="link" style="display:block;margin-top:4px" onclick="markPaid(${b.id})">Mark paid</button>` : ""}</div><button class="del" aria-label="Delete" onclick="delBill(${b.id})">✕</button></div>`; }).join("") : empty("No recurring bills added.")}</div>`;
+      <div class="card"><b>Your recurring bills</b>${list.length ? list.map(b => { const paid = periodPaid(b), overdue = !paid && b.nd < today(), open = !paid && markPayOpen[b.id]; return `<div class="row"><span class="em">${BE[b.category] || "🧾"}</span><div class="g"><b>${esc(b.name)}</b><small>${esc(b.category)} · ${freqTxt(b)}</small><small${overdue ? ' class="up"' : ""}>${paid ? "Next " + df(b.nd) : overdue ? "Overdue since " + df(b.nd) : b.nd == today() ? "Due today" : "Due " + df(b.nd)}</small></div><div class="r"><b>${fm(b.amount)}</b>${!paid && !open ? `<button class="link" style="display:block;margin-top:4px" onclick="markPaidOpen(${b.id})">Mark paid</button>` : ""}</div><button class="del" aria-label="Delete" onclick="delBill(${b.id})">✕</button></div>${open ? markPaidPanel(b) : ""}`; }).join("") : empty("No recurring bills added.")}</div>`;
     }
 
     function askNotif() {
