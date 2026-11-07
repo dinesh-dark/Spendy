@@ -531,6 +531,8 @@ READ THE BILL IN THIS ORDER:
 7. NEVER list as items: store address, phone numbers, PIN, GSTIN, bill number, date/time, CGST/SGST/GST lines, discount/round-off lines, payment lines (Cash Tendered, Balance Returned), 'Total Qty', 'Items:' counts.
 8. NAME MUST NEVER BE A BARE CATEGORY WORD. The "name" field is the specific product, never one of the category labels (Vegetables, Grocery, Grains, Dairy, Meat & fish, Household, Personal care, Miscellaneous, etc.) used on its own as if it were the product. This matters most for items that are not common/packaged goods - unusual vegetables, herbs, spices, or regional ingredients (e.g. fenugreek, garlic, kalpasi/black stone flower, curry leaves, asafoetida). If you are not fully sure what an item is, still give your single best specific guess at the actual product name exactly as printed or implied on the bill, in Title Case - never fall back to naming it after its category. A "category" field equal to the "name" field is always wrong.
 
+9. PAYMENT: "payment" is only what the bill itself shows - "UPI" for UPI / GPay / PhonePe / Paytm / BHIM, "Card" for a debit/credit card or card-machine slip, "Cash" only when the bill shows cash was paid/tendered. If the bill does not show how it was paid, use "" - never assume Cash.
+
 Output strictly in the JSON schema.`;
 
   const geminiSchema = {
@@ -539,7 +541,7 @@ Output strictly in the JSON schema.`;
       store: { type: "STRING", description: "Shop or merchant name only, or empty string" },
       date: { type: "STRING", description: "Bill date as YYYY-MM-DD or empty string" },
       total: { type: "NUMBER", description: "Final payable amount PRINTED on the bill (not computed)" },
-      payment: { type: "STRING", enum: ["Cash", "UPI", "Card"], description: "Payment mode detected (Cash if not shown)" },
+      payment: { type: "STRING", description: "Payment mode printed on the bill: exactly one of Cash, UPI, Card - or an empty string if the bill does not show how it was paid" },
       items: {
         type: "ARRAY",
         items: {
@@ -648,7 +650,7 @@ Output strictly in the JSON schema.`;
     store: String(parsed.store || "").trim().slice(0, 40),
     date: /^\d{4}-\d{2}-\d{2}$/.test(parsed.date || "") ? parsed.date : defaultDate,
     total: finalTotal,
-    payment: ["Cash", "UPI", "Card"].includes(parsed.payment) ? parsed.payment : "Cash",
+    payment: ["Cash", "UPI", "Card"].includes(parsed.payment) ? parsed.payment : "",   // "" = not shown; the app makes the user choose
     items: cleanItems
   };
   if (warning) result.warning = warning; // extra optional field; existing code can ignore it
@@ -808,7 +810,12 @@ export function parseLocalText(rawText, defaultDate, knownProducts = []) {
     store,
     date,
     total: safeNum(total),
-    payment: /upi|gpay|phonepe|paytm/i.test(rawText) ? "UPI" : /\bcard\b|visa|mastercard|rupay/i.test(rawText) ? "Card" : "Cash",
+    // "" when the receipt does not say - the app makes the payment mode an explicit choice, so a
+    // plain "Cash" must not be assumed. Cash only counts when the text actually says cash was paid.
+    payment: /\b(?:upi|gpay|google\s*pay|phonepe|paytm|bhim)\b/i.test(rawText) ? "UPI"
+      : /\bcard\b|\bvisa\b|\bmaster\s*card\b|\brupay\b/i.test(rawText) ? "Card"
+      : /\bcash\s*(?:tendered|received|paid|given|payment)\b|\bpaid\s*(?:by|in|via)\s*cash\b|\b(?:mode|tender|payment)\b[^\n]{0,20}\bcash\b/i.test(rawText) ? "Cash"
+      : "",
     items
   };
   if (items.length && total && Math.abs(sumItems - total) > Math.max(2, total * 0.01)) {
