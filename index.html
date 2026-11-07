@@ -186,6 +186,26 @@
     }
     .f { display: flex; gap: 8px; }
     .f > * { flex: 1; }
+    .f > .mic { flex: none; }
+    .mic {
+      width: 48px;
+      height: 48px;
+      border-radius: 50%;
+      border: 0;
+      background: var(--blue);
+      color: #fff;
+      font-size: 22px;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .mic.rec { background: var(--red); animation: micpulse 1.2s infinite; }
+    .mic:disabled { opacity: .4; cursor: not-allowed; }
+    @keyframes micpulse {
+      0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, .5); }
+      70% { box-shadow: 0 0 0 14px rgba(220, 38, 38, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+    }
+    @media (prefers-reduced-motion: reduce) { .mic.rec { animation: none; } }
     .combo { position: relative; }
     .combo-list {
       position: absolute;
@@ -322,7 +342,7 @@
   <nav><div id="nav"></div></nav>
 
   <script type="module">
-    import { shrinkImage, pdfToCanvas, parseWithGemini, localOcr, parseLocalText, standardizeName } from './bill-parser.mjs';
+    import { shrinkImage, pdfToCanvas, parseWithGemini, localOcr, parseLocalText, standardizeName, parseVoiceWithGemini, parseVoiceLocal } from './bill-parser.mjs';
 
     const P = [
       ["Rent", "🏠", "Bills & Utilities"],
@@ -469,6 +489,9 @@
     const getBudgetForMonth = m => (S.budgets && typeof S.budgets[m] === "number") ? S.budgets[m] : (S.defaultBudget || 25000);
 
     let v = "home", mo = today().slice(0, 7), bMo = today().slice(0, 7), sel = null, editId = null, B = null;
+    // Voice input state (declared up here so render(), which stops a live recording on every
+    // screen change, can never reach them before they exist)
+    let vRec = null, vBusy = false;
     let repType = "month", repAnchor = today(), repFrom = null, repTo = null;
     // Which billing cycle each card's "Manage Credit Cards" entry is currently showing/
     // editing, keyed by card id. A statement only exists once its cycle has closed, so
@@ -500,8 +523,9 @@
     const empty = t => `<div class="empty">${t}</div>`;
 
     function discardBill() {
+      const spoken = B && B.voice;
       B = null;
-      go('bill');
+      go(spoken ? 'add' : 'bill');
     }
 
     // The bill-scan verification screen's fields are edited via these instead of
@@ -570,6 +594,9 @@
     window.toggleAddCard = toggleAddCard;
     window.toggleCardMgmt = toggleCardMgmt;
     window.hideSelList = hideSelList;
+    window.setVoiceLang = setVoiceLang;
+    window.voiceToggle = voiceToggle;
+    window.voiceFill = voiceFill;
 
     function setBMo(m) { bMo = m; go("budget"); }
     function setSel(x) { sel = x; stf = "all"; go("price"); }
@@ -792,6 +819,7 @@
     function add() {
       return `<h1>Add purchase</h1>
       <button class="tile" style="width:100%;margin-bottom:12px" onclick="go('bill')">📷<b>Scan a bill instead</b><small>Extract items, rates & stores automatically</small></button>
+      ${voiceCard()}
       <div class="head"><b>Choose a product</b><button class="link" onclick="go('prod')">Add custom product</button></div>
       <div class="chips">${allP().map((p, i) => `<button class="chip" onclick="pick(${i})"><span>${p[1]}</span>${p[0]}</button>`).join("")}</div>
       <div class="card">
@@ -857,6 +885,211 @@
       save();
       mo = g("dt").slice(0, 7);
       go("hist");
+    }
+
+    // ---- Voice input: "petrol for 300rs in BM Enterprises by UPI" -> filled-in form ----
+    // Two separate steps on purpose. (1) Speech -> text is the browser's own recogniser
+    // (Web Speech API: Chrome / Edge / Android; it needs an internet connection and is
+    // missing in Firefox). (2) Text -> fields is Gemini when a key is saved in Settings,
+    // otherwise a simple on-device English reader. The transcript sits in an editable box,
+    // so a misheard word can be fixed (or the whole thing typed / dictated with the phone
+    // keyboard's own mic) before it is turned into a purchase.
+    const VOICE_LANGS = [["en-IN", "English"], ["ta-IN", "தமிழ்"], ["hi-IN", "हिन्दी"]];
+    const voiceSupported = () => !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+    function voiceLang() {
+      let l = "";
+      try { l = localStorage.getItem("vlang") || ""; } catch (e) {}
+      return VOICE_LANGS.some(x => x[0] === l) ? l : "en-IN";
+    }
+    function setVoiceLang(l) {
+      try { localStorage.setItem("vlang", l); } catch (e) {}
+    }
+
+    function voiceCard() {
+      const ok = voiceSupported();
+      return `<div class="card" style="margin-bottom:12px">
+        <div class="head"><b>🎤 Speak a purchase</b>
+          <select aria-label="Speech language" onchange="setVoiceLang(this.value)" style="width:auto;flex:none;padding:6px 8px">${VOICE_LANGS.map(x => `<option value="${x[0]}" ${x[0] === voiceLang() ? "selected" : ""}>${x[1]}</option>`).join("")}</select>
+        </div>
+        <div class="f" style="align-items:center">
+          <button type="button" class="mic" id="vmic" aria-label="Start recording" onclick="voiceToggle()" ${ok ? "" : "disabled"}>🎤</button>
+          <input id="vt" maxlength="200" autocomplete="off" placeholder="e.g. petrol 300 rs by UPI" onkeydown="if(event.key==='Enter'){event.preventDefault();voiceFill()}">
+        </div>
+        <button type="button" class="btn" id="vgo" style="margin-top:10px" onclick="voiceFill()">Fill the form</button>
+        <small id="vstat" style="display:block;margin-top:8px;color:var(--mute)">${ok
+          ? "Tap the mic, say what you bought, where, and how you paid. Nothing is saved until you press Save purchase."
+          : "This browser can't record speech (try Chrome). You can still type here, or use your keyboard's own 🎤 dictation, then tap Fill the form."}</small>
+        ${S.geminiKey ? "" : `<small style="display:block;margin-top:6px;color:var(--mute)">💡 Without a Gemini key (Settings) only simple English phrases are understood; with one, Tamil, Hindi and free-form sentences work too.</small>`}
+      </div>`;
+    }
+
+    // Status line under the mic. textContent only - the text includes what was heard.
+    function voiceMsg(t, warn) {
+      const e = $("#vstat");
+      if (!e) return;
+      e.textContent = t;
+      e.style.color = warn ? "var(--red)" : "var(--mute)";
+    }
+
+    function voiceUi(on) {
+      const b = $("#vmic");
+      if (!b) return;
+      b.classList.toggle("rec", on);
+      b.textContent = on ? "⏹" : "🎤";
+      b.setAttribute("aria-label", on ? "Stop recording" : "Start recording");
+    }
+
+    // Stops a live recording without filling anything in - used when the screen changes.
+    function voiceAbort() {
+      if (!vRec) return;
+      const r = vRec;
+      r._quiet = true;
+      vRec = null;
+      try { r.abort(); } catch (e) {}
+    }
+
+    const VOICE_ERRORS = {
+      "not-allowed": "Microphone access is blocked. Allow the microphone for this site in your browser settings, or type the purchase instead.",
+      "service-not-allowed": "Microphone access is blocked. Allow the microphone for this site in your browser settings, or type the purchase instead.",
+      "no-speech": "I didn't hear anything. Tap the mic and try again.",
+      "audio-capture": "No working microphone was found (or another app is using it).",
+      "network": "Speech recognition needs an internet connection. You can type the purchase instead.",
+      "language-not-supported": "This browser can't recognise that language. Pick another one above, or type the purchase."
+    };
+
+    function voiceToggle() {
+      if (vRec) { try { vRec.stop(); } catch (e) {} return; }   // stop() still delivers what was said, then onend fills the form
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) { voiceMsg("This browser can't record speech. Type the purchase instead.", true); return; }
+      const r = new SR();
+      let err = "";
+      r.lang = voiceLang();
+      r.interimResults = true;
+      r.continuous = false;
+      r.maxAlternatives = 1;
+      r.onstart = () => {
+        if (vRec !== r) return;
+        voiceUi(true);
+        voiceMsg("Listening… say e.g. “petrol for 300 rupees in BM Enterprises by UPI”");
+      };
+      r.onresult = e => {
+        if (r._quiet) return;
+        let fin = "", tmp = "";
+        for (let i = 0; i < e.results.length; i++) {
+          if (e.results[i].isFinal) fin += e.results[i][0].transcript;
+          else tmp += e.results[i][0].transcript;
+        }
+        const box = $("#vt");
+        if (box) box.value = (fin + " " + tmp).trim();
+      };
+      r.onerror = e => { err = (e && e.error) || "error"; };
+      r.onend = () => {
+        if (r._quiet) return;
+        if (vRec === r) vRec = null;
+        voiceUi(false);
+        if (err && err !== "aborted") {
+          voiceMsg(VOICE_ERRORS[err] || "Speech recognition failed (" + err + "). You can type the purchase instead.", true);
+          return;
+        }
+        const box = $("#vt");
+        if (box && box.value.trim()) voiceFill();
+        else voiceMsg(VOICE_ERRORS["no-speech"], true);
+      };
+      vRec = r;
+      try {
+        r.start();
+      } catch (e) {
+        vRec = null;
+        voiceUi(false);
+        voiceMsg("Couldn't start the microphone: " + (e && e.message ? e.message : "error"), true);
+      }
+    }
+
+    // Turns the transcript box into a purchase: Gemini when a key is saved (falling back to
+    // the offline reader if the AI call fails), otherwise the offline reader directly.
+    async function voiceFill() {
+      if (vBusy) return;
+      const box = $("#vt"), text = box ? box.value.trim() : "";
+      if (!text) { voiceMsg("Say or type a purchase first, e.g. “petrol for 300 rupees in BM Enterprises by UPI”.", true); return; }
+      const o = {
+        knownProducts: knownList(),
+        categories: Object.keys(AllC()),
+        stores: [...new Set(S.items.map(i => i.store).filter(Boolean))],
+        payModes: PAY_MODES,
+        today: today()
+      };
+      const goBtn = $("#vgo");
+      vBusy = true;
+      if (goBtn) goBtn.disabled = true;
+      let res, note = "";
+      try {
+        if (S.geminiKey) {
+          try {
+            res = await parseVoiceWithGemini(text, S.geminiKey, o, voiceMsg);
+          } catch (aiErr) {
+            console.warn("Gemini voice parse failed, using the offline reader:", aiErr);
+            note = "AI unavailable (" + (aiErr && aiErr.message ? aiErr.message : "error") + "), so the basic offline reader was used - please check every field.";
+            res = parseVoiceLocal(text, o);
+          }
+        } else {
+          res = parseVoiceLocal(text, o);
+        }
+      } catch (e) {
+        voiceMsg("Couldn't read that: " + (e && e.message ? e.message : "error"), true);
+        return;
+      } finally {
+        vBusy = false;
+        const b = $("#vgo");
+        if (b) b.disabled = false;
+      }
+      if (v !== "add") return;   // the user moved on while the AI was thinking
+      applyVoiceResult(res, note);
+    }
+
+    function applyVoiceResult(r, note) {
+      const items = r.items || [];
+      if (!items.length) {
+        voiceMsg("I couldn't find a purchase in “" + r.heard + "”. Try: “petrol for 300 rupees in BM Enterprises by UPI”.", true);
+        return;
+      }
+
+      // Several items in one sentence -> the same verify screen a scanned bill uses, so
+      // nothing is silently dropped and every line (and its price) can be corrected.
+      if (items.length > 1) {
+        B = {
+          busy: false, voice: true, store: r.store, date: r.date, payment: r.payment, total: 0,
+          items: items.map(i => ({ ...i, amount: i.amount > 0 ? i.amount : NaN })),
+          note: (note ? note + " " : "") + "Heard: “" + r.heard + "”. Check every line before saving - speech can be misheard.",
+          rawJson: ""
+        };
+        go("bill");
+        return;
+      }
+
+      const i = items[0], set = (id, val) => { const e = $("#" + id); if (e) e.value = val; };
+      set("nm", i.name);
+      set("ct", i.category);
+      set("u", i.unit);
+      set("q", i.qty);
+      set("pr", i.amount > 0 ? +(i.amount / i.qty).toFixed(4) : "");
+      if (r.store) set("sto", r.store);
+      set("dt", r.date);
+      if (r.payment) { set("pm", r.payment); pmC(); }
+      if (!$("#nt").value.trim()) set("nt", "Added by voice");
+      document.querySelectorAll(".chip.on").forEach(c => c.classList.remove("on"));
+      tot();
+      $("#err").textContent = "";
+
+      const missing = [];
+      if (!(i.amount > 0)) missing.push("the price");
+      if (!$("#pm").value) missing.push("the payment mode");
+      let msg = "Filled: " + i.name + " · " + i.qty + " " + i.unit + (i.amount > 0 ? " · " + fm(i.amount) : "") +
+        (r.store ? " · " + r.store : "") + (r.payment ? " · " + r.payment : "") + " · " + df(r.date) + ".";
+      msg += missing.length ? " Please enter " + missing.join(" and ") + " below, then tap Save purchase." : " Check the form below, then tap Save purchase.";
+      if (note) msg += " " + note;
+      voiceMsg(msg, missing.length > 0 || !!note);
+      const f = $("#nm") && $("#nm").closest(".card");
+      if (f) f.scrollIntoView({ behavior: "smooth", block: "start" });
     }
 
     // One-time Login/Signup screen, shown before Home until S.onboarded is set (a
@@ -1020,9 +1253,9 @@
         <button class="link" onclick="go('add')">Add by hand instead</button>`;
       }
 
-      return `<h1>Verify scanned bill</h1>
+      return `<h1>${B.voice ? "Verify spoken purchases" : "Verify scanned bill"}</h1>
       <div class="card">
-        <small>Review parsed items, normalized units, and ensure the individual items match your printed total.</small>
+        <small>${B.voice ? "Review what was heard, fill in any missing prices, and pick the payment mode." : "Review parsed items, normalized units, and ensure the individual items match your printed total."}</small>
         ${B.note ? `<div class="warn">${esc(B.note)}</div>` : ""}
         ${kpList()}
         ${B.img ? `<img class="thumb" src="${B.img}" alt="Receipt">` : ""}
@@ -1033,14 +1266,14 @@
           <div><label>Payment</label><select onchange="setBField('payment', this.value);bPmC()">${payOpts(B.payment)}</select></div>
         </div>
         <div id="bpmx">${B.payment == "Credit Card" ? cardPickerHtml(B.cardId || (S.cards[0] && S.cards[0].id), "", "setBField('cardId', this.value)") : ""}</div>
-        <details style="margin-top:8px">
+        ${B.voice ? "" : `<details style="margin-top:8px">
           <summary style="font-size:12px;color:var(--mute);cursor:pointer">View Structured JSON</summary>
           <div class="json-box">${esc(B.rawJson || "")}</div>
-        </details>
+        </details>`}
       </div>
 
       <div class="card">
-        <div class="head"><b>Scanned Items</b><small id="bn"></small></div>
+        <div class="head"><b>${B.voice ? "Items" : "Scanned Items"}</b><small id="bn"></small></div>
         ${B.items.map((i, k) => `
           <div class="bi ${i.on ? "" : "off"}" id="bi${k}">
             <div class="f" style="align-items:center">
@@ -1064,15 +1297,15 @@
       </div>
 
       <div class="card">
-        <label style="margin-top:0">Total printed on receipt (₹)</label>
-        <input type="number" inputmode="decimal" min="0" step="any" value="${B.total || ""}" placeholder="Printed grand total" oninput="setBField('total', +this.value||0);bt()">
-        <div class="total"><span>Sum of selected items</span><span id="bsum">₹0.00</span></div>
+        ${B.voice ? "" : `<label style="margin-top:0">Total printed on receipt (₹)</label>
+        <input type="number" inputmode="decimal" min="0" step="any" value="${B.total || ""}" placeholder="Printed grand total" oninput="setBField('total', +this.value||0);bt()">`}
+        <div class="total" ${B.voice ? 'style="margin-top:0"' : ""}><span>${B.voice ? "Total of selected items" : "Sum of selected items"}</span><span id="bsum">₹0.00</span></div>
         <div id="bchk"></div>
         <div class="err" id="berr"></div>
         <button class="btn" id="badd" onclick="addBatchBill()">Add to spending</button>
-        <button class="link" style="display:block;margin:12px auto 0" onclick="discardBill()">Discard bill</button>
+        <button class="link" style="display:block;margin:12px auto 0" onclick="discardBill()">${B.voice ? "Discard and go back" : "Discard bill"}</button>
       </div>
-      ${up}`;
+      ${B.voice ? "" : up}`;
     }
 
     function bs(k, f, x) {
@@ -1096,6 +1329,7 @@
       $("#bn").textContent = `${on.length} of ${B.items.length} selected`;
       $("#badd").textContent = `Add ${on.length} item${on.length === 1 ? "" : "s"} to spending`;
 
+      if (B.voice) { $("#bchk").innerHTML = ""; return; }   // nothing printed to compare a spoken purchase against
       const diff = B.total ? +(t - B.total).toFixed(2) : 0;
       if (!B.total) {
         $("#bchk").innerHTML = `<div class="warn">Enter printed bill total above to verify individual item sum.</div>`;
@@ -1137,7 +1371,7 @@
           pay: B.payment,
           cardId: B.payment == "Credit Card" ? (B.cardId || "") : "",
           store: (B.store || "").trim(),
-          notes: "Scanned from bill"
+          notes: B.voice ? "Added by voice" : "Scanned from bill"
         });
       });
 
@@ -1947,6 +2181,7 @@
     // itself and by the popstate handler below (which fires *because* history already
     // moved, so re-pushing here would break the back stack instead of following it).
     function render(x) {
+      voiceAbort();
       v = x;
       $("#app").innerHTML = V[x]();
       // No bottom nav on the Login screen - there's nothing to navigate to until
