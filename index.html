@@ -1277,7 +1277,7 @@
         ${B.items.map((i, k) => `
           <div class="bi ${i.on ? "" : "off"}" id="bi${k}">
             <div class="f" style="align-items:center">
-              <input type="checkbox" style="width:auto;flex:none" ${i.on ? "checked" : ""} aria-label="Include" onchange="bs(${k},'on',this.checked);$('#bi${k}').classList.toggle('off',!this.checked)">
+              <input type="checkbox" style="width:auto;flex:none" ${i.on ? "checked" : ""} aria-label="Include" onchange="bs(${k},'on',this.checked)">
               <span class="em" style="flex:none">${emo(i.name)}</span>
               <input maxlength="40" list="kp" value="${esc(i.name)}" placeholder="Item name" aria-label="Product" oninput="bs(${k},'name',this.value)">
               <button class="del" style="flex:none" aria-label="Remove" onclick="delBillItem(${k})">✕</button>
@@ -1310,6 +1310,9 @@
 
     function bs(k, f, x) {
       B.items[k][f] = x;
+      // Dim/undim the row here, not in the inline handler: `$` is module-scoped, so calling
+      // it from an onchange attribute threw "$ is not defined" and the row never dimmed.
+      if (f === "on") { const r = $("#bi" + k); if (r) r.classList.toggle("off", !x); }
       bt();
     }
 
